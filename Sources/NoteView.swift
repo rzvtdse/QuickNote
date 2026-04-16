@@ -1,5 +1,24 @@
 import AppKit
 
+// MARK: - Custom Text View
+
+class SectionTextView: NSTextView {
+    var onFocus: (() -> Void)?
+    var onBlur: (() -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        if result { onFocus?() }
+        return result
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        if result { onBlur?() }
+        return result
+    }
+}
+
 // MARK: - Model
 
 struct NoteSection: Codable {
@@ -140,6 +159,16 @@ class SectionsController: NSObject {
 
     // MARK: Persistence
 
+    func focusSection(offset: Int, from id: String) {
+        let list = filteredSections
+        guard let idx = list.firstIndex(where: { $0.id == id }) else { return }
+        let next = (idx + offset + list.count) % list.count
+        tableView.scrollRowToVisible(next)
+        DispatchQueue.main.async {
+            (self.tableView.view(atColumn: 0, row: next, makeIfNecessary: true) as? SectionCellView)?.focus()
+        }
+    }
+
     func focusLastSection() {
         let lastId = UserDefaults.standard.string(forKey: "qn_last_section")
         let target = lastId.flatMap { id in filteredSections.firstIndex(where: { $0.id == id }) }
@@ -217,7 +246,7 @@ extension SectionsController: NSSearchFieldDelegate {
 
 class SectionCellView: NSTableCellView {
 
-    private var textView: NSTextView!
+    private var textView: SectionTextView!
     private var sectionId = ""
     private weak var ctrl: SectionsController?
 
@@ -272,7 +301,7 @@ class SectionCellView: NSTableCellView {
         header.addSubview(del)
 
         // Text view
-        textView = NSTextView()
+        textView = SectionTextView()
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.isRichText = false
         textView.backgroundColor = .clear
@@ -296,6 +325,12 @@ class SectionCellView: NSTableCellView {
         ]
         textView.string = section.content
         textView.delegate = self
+        textView.onFocus = { [weak self] in
+            guard let self = self else { return }
+            UserDefaults.standard.set(self.sectionId, forKey: "qn_last_section")
+            self.setActive(true)
+        }
+        textView.onBlur = { [weak self] in self?.setActive(false) }
         addSubview(textView)
 
         // Highlight search matches
@@ -334,6 +369,11 @@ class SectionCellView: NSTableCellView {
 
     func focus() { textView?.window?.makeFirstResponder(textView) }
 
+    func setActive(_ active: Bool) {
+        layer?.backgroundColor = NSColor.white
+            .withAlphaComponent(active ? 0.14 : 0.07).cgColor
+    }
+
     @objc func copySelf() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(textView.string, forType: .string)
@@ -345,6 +385,18 @@ class SectionCellView: NSTableCellView {
 // MARK: Text View Delegate
 
 extension SectionCellView: NSTextViewDelegate {
+
+    func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if selector == #selector(NSResponder.insertTab(_:)) {
+            ctrl?.focusSection(offset: +1, from: sectionId)
+            return true
+        }
+        if selector == #selector(NSResponder.insertBacktab(_:)) {
+            ctrl?.focusSection(offset: -1, from: sectionId)
+            return true
+        }
+        return false
+    }
 
     func textDidChange(_ notification: Notification) {
         ctrl?.update(id: sectionId, content: textView.string)
