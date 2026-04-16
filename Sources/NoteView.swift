@@ -244,6 +244,15 @@ class SectionCellView: NSTableCellView {
         handle.font = NSFont.systemFont(ofSize: 10, weight: .bold)
         header.addSubview(handle)
 
+        let copy = NSButton(title: "⎘", target: self, action: #selector(copySelf))
+        copy.translatesAutoresizingMaskIntoConstraints = false
+        copy.isBordered = false
+        copy.bezelStyle = .inline
+        copy.font = NSFont.systemFont(ofSize: 13, weight: .light)
+        copy.contentTintColor = NSColor.white.withAlphaComponent(0.3)
+        copy.toolTip = "Copy"
+        header.addSubview(copy)
+
         let del = NSButton(title: "×", target: self, action: #selector(deleteSelf))
         del.translatesAutoresizingMaskIntoConstraints = false
         del.isBordered = false
@@ -303,6 +312,9 @@ class SectionCellView: NSTableCellView {
             del.trailingAnchor.constraint(equalTo: header.trailingAnchor),
             del.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
+            copy.trailingAnchor.constraint(equalTo: del.leadingAnchor, constant: -6),
+            copy.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+
             textView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 2),
             textView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             textView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
@@ -311,6 +323,11 @@ class SectionCellView: NSTableCellView {
     }
 
     func focus() { textView?.window?.makeFirstResponder(textView) }
+
+    @objc func copySelf() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(textView.string, forType: .string)
+    }
 
     @objc func deleteSelf() { ctrl?.delete(id: sectionId) }
 }
