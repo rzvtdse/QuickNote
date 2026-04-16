@@ -299,10 +299,10 @@ class SectionsController: NSObject {
             searchField.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -10),
             searchHeightConstraint,
 
-            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 4),
-            scroll.leadingAnchor.constraint(equalTo: parent.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: parent.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bottomStack.topAnchor, constant: -4),
+            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 10),
+            scroll.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 10),
+            scroll.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -10),
+            scroll.bottomAnchor.constraint(equalTo: bottomStack.topAnchor, constant: -10),
 
             bottomStack.centerXAnchor.constraint(equalTo: parent.centerXAnchor),
             bottomStack.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -10),
