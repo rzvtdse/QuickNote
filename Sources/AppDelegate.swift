@@ -27,11 +27,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let editItem = NSMenuItem()
         let editMenu = NSMenu(title: "Edit")
-        editMenu.addItem(NSMenuItem(title: "Cut",        action: #selector(NSText.cut(_:)),       keyEquivalent: "x"))
-        editMenu.addItem(NSMenuItem(title: "Copy",       action: #selector(NSText.copy(_:)),      keyEquivalent: "c"))
-        editMenu.addItem(NSMenuItem(title: "Paste",      action: #selector(NSText.paste(_:)),     keyEquivalent: "v"))
-        editMenu.addItem(NSMenuItem(title: "Undo",       action: #selector(UndoManager.undo),     keyEquivalent: "z"))
-        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenu.addItem(NSMenuItem(title: "Cut",         action: #selector(NSText.cut(_:)),       keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "Copy",        action: #selector(NSText.copy(_:)),      keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste",       action: #selector(NSText.paste(_:)),     keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "Undo",        action: #selector(UndoManager.undo),     keyEquivalent: "z"))
+        editMenu.addItem(NSMenuItem(title: "Select All",  action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "New Section", action: #selector(newSection),           keyEquivalent: "N"))
         editItem.submenu = editMenu
         main.addItem(editItem)
 
@@ -127,6 +129,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     // MARK: - Actions
+
+    @objc func newSection() { sectionsController.addSection() }
 
     @objc func togglePanel() {
         panel.isVisible ? panel.orderOut(nil) : showPanel()

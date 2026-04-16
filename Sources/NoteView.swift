@@ -407,12 +407,22 @@ extension SectionCellView: NSTextViewDelegate {
                   replacementString string: String?) -> Bool {
         guard let s = string else { return true }
         let proposed = (textView.string as NSString).replacingCharacters(in: range, with: s)
-        guard proposed.hasSuffix("```") else { return true }
-        let before = String(proposed.dropLast(3))
+
+        // Cursor position after insertion
+        let cursorPos = range.location + s.count
+        guard cursorPos >= 3 else { return true }
+
+        let nsProposed = proposed as NSString
+        let triggerRange = NSRange(location: cursorPos - 3, length: 3)
+        guard nsProposed.substring(with: triggerRange) == "```" else { return true }
+
+        let before = nsProposed.substring(to: triggerRange.location)
+        let after  = nsProposed.substring(from: cursorPos)
+
         DispatchQueue.main.async {
             textView.string = before
             self.ctrl?.update(id: self.sectionId, content: before)
-            self.ctrl?.split(id: self.sectionId, before: before, after: "")
+            self.ctrl?.split(id: self.sectionId, before: before, after: after)
         }
         return false
     }
