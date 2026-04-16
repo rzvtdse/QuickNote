@@ -34,6 +34,9 @@ class SectionsController: NSObject {
     private var sections: [NoteSection] = []
     private var searchQuery: String = ""
     private var tableView: NSTableView!
+    private var mergeButton: NSButton!
+    private var selectedIds: Set<String> = []
+    private var eventMonitor: Any?
 
     private static let pbType = NSPasteboard.PasteboardType("com.quicknote.section")
 
@@ -82,14 +85,27 @@ class SectionsController: NSObject {
         scroll.borderType = .noBorder
         parent.addSubview(scroll)
 
-        // Add section button
+        // Bottom buttons
         let addBtn = NSButton(title: "+ New Section", target: self, action: #selector(addSection))
         addBtn.translatesAutoresizingMaskIntoConstraints = false
         addBtn.isBordered = false
         addBtn.bezelStyle = .inline
         addBtn.font = NSFont.systemFont(ofSize: 11)
         addBtn.contentTintColor = NSColor.white.withAlphaComponent(0.4)
-        parent.addSubview(addBtn)
+
+        mergeButton = NSButton(title: "⊕ Merge", target: self, action: #selector(mergeSections))
+        mergeButton.translatesAutoresizingMaskIntoConstraints = false
+        mergeButton.isBordered = false
+        mergeButton.bezelStyle = .inline
+        mergeButton.font = NSFont.systemFont(ofSize: 11)
+        mergeButton.contentTintColor = NSColor.systemBlue.withAlphaComponent(0.85)
+        mergeButton.isHidden = true
+
+        let bottomStack = NSStackView(views: [addBtn, mergeButton])
+        bottomStack.translatesAutoresizingMaskIntoConstraints = false
+        bottomStack.orientation = .horizontal
+        bottomStack.spacing = 16
+        parent.addSubview(bottomStack)
 
         NSLayoutConstraint.activate([
             search.topAnchor.constraint(equalTo: parent.topAnchor, constant: 10),
@@ -99,16 +115,70 @@ class SectionsController: NSObject {
             scroll.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 8),
             scroll.leadingAnchor.constraint(equalTo: parent.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: parent.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: addBtn.topAnchor, constant: -4),
+            scroll.bottomAnchor.constraint(equalTo: bottomStack.topAnchor, constant: -4),
 
-            addBtn.centerXAnchor.constraint(equalTo: parent.centerXAnchor),
-            addBtn.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -10),
+            bottomStack.centerXAnchor.constraint(equalTo: parent.centerXAnchor),
+            bottomStack.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -10),
         ])
+
+        // Cmd+click monitor for multi-select
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self = self else { return event }
+            let pt = self.tableView.convert(event.locationInWindow, from: nil)
+            let row = self.tableView.row(at: pt)
+            if event.modifierFlags.contains(.command), row >= 0, row < self.filteredSections.count {
+                let id = self.filteredSections[row].id
+                if self.selectedIds.contains(id) { self.selectedIds.remove(id) }
+                else { self.selectedIds.insert(id) }
+                self.updateSelectionUI()
+                return nil // consume — don't focus text view
+            } else if !event.modifierFlags.contains(.command), !self.selectedIds.isEmpty {
+                // Don't clear selection when clicking the merge button itself
+                let ptInMerge = self.mergeButton.convert(event.locationInWindow, from: nil)
+                if !self.mergeButton.bounds.contains(ptInMerge) {
+                    self.selectedIds.removeAll()
+                    self.updateSelectionUI()
+                }
+            }
+            return event
+        }
+    }
+
+    deinit {
+        if let m = eventMonitor { NSEvent.removeMonitor(m) }
+    }
+
+    // MARK: Selection
+
+    func updateSelectionUI() {
+        for row in 0..<tableView.numberOfRows {
+            guard row < filteredSections.count else { continue }
+            (tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SectionCellView)?
+                .setSelected(selectedIds.contains(filteredSections[row].id))
+        }
+        mergeButton.isHidden = selectedIds.count < 2
+    }
+
+    @objc func mergeSections() {
+        let ordered = filteredSections.filter { selectedIds.contains($0.id) }
+        guard ordered.count >= 2 else { return }
+        let merged = ordered.map { $0.content }.joined(separator: "\n\n")
+        let firstId = ordered[0].id
+        let removeIds = Set(ordered.dropFirst().map { $0.id })
+        if let idx = sections.firstIndex(where: { $0.id == firstId }) {
+            sections[idx].content = merged
+        }
+        sections.removeAll { removeIds.contains($0.id) }
+        selectedIds.removeAll()
+        tableView.reloadData()
+        updateSelectionUI()
+        save()
     }
 
     // MARK: Section Operations
 
     @objc func addSection() {
+        selectedIds.removeAll()
         sections.append(NoteSection())
         tableView.reloadData()
         save()
@@ -144,6 +214,7 @@ class SectionsController: NSObject {
     func delete(id: String) {
         sections.removeAll { $0.id == id }
         if sections.isEmpty { sections = [NoteSection()] }
+        selectedIds.removeAll()
         tableView.reloadData()
         save()
     }
@@ -316,6 +387,7 @@ class SectionCellView: NSTableCellView {
         textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                                                         height: CGFloat.greatestFiniteMagnitude)
         textView.textContainerInset = NSSize(width: 2, height: 2)
+        textView.allowsUndo = true
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
@@ -372,6 +444,11 @@ class SectionCellView: NSTableCellView {
     func setActive(_ active: Bool) {
         layer?.backgroundColor = NSColor.white
             .withAlphaComponent(active ? 0.14 : 0.07).cgColor
+    }
+
+    func setSelected(_ selected: Bool) {
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.5).cgColor
+        layer?.borderWidth = selected ? 1.5 : 0
     }
 
     @objc func copySelf() {
