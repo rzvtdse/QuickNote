@@ -446,6 +446,26 @@ class SectionCellView: NSTableCellView {
             .withAlphaComponent(active ? 0.14 : 0.07).cgColor
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil
+        ))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard layer?.borderWidth == 0 else { return } // skip if selected
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.11).cgColor
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard layer?.borderWidth == 0 else { return }
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.07).cgColor
+    }
+
     func setSelected(_ selected: Bool) {
         layer?.borderColor = NSColor.white.withAlphaComponent(0.5).cgColor
         layer?.borderWidth = selected ? 1.5 : 0
