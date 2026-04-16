@@ -91,6 +91,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
+        // Remember window size & position across launches
+        panel.setFrameAutosaveName("QuickNotePanel")
+
         let closeBtn = panel.standardWindowButton(.closeButton)
         closeBtn?.target = self
         closeBtn?.action = #selector(hidePanel)
