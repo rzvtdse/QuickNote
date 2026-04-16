@@ -476,6 +476,7 @@ extension SectionCellView: NSTextViewDelegate {
     }
 
     func textDidChange(_ notification: Notification) {
+        textView.breakUndoCoalescing()
         ctrl?.update(id: sectionId, content: textView.string)
         ctrl?.refreshRowHeight(for: self)
     }
