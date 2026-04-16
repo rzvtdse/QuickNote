@@ -12,6 +12,12 @@ echo "Building $APP_NAME..."
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RES_DIR"
 
+# Generate app icon
+echo "Generating icon..."
+swift Resources/make_icon.swift
+iconutil -c icns Resources/AppIcon.iconset -o Resources/AppIcon.icns
+cp Resources/AppIcon.icns "$RES_DIR/AppIcon.icns"
+
 swiftc \
     Sources/main.swift \
     Sources/AppDelegate.swift \
