@@ -8,7 +8,7 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 
 - **Floating HUD panel** — semi-transparent, always on top, across all spaces
 - **Sections** — multiple independent note cards in one window
-- **Search** — filter sections instantly with highlighted matches
+- **Search** — `Cmd+F` to open the search bar, `Esc` to dismiss
 - **Drag to reorder** — rearrange sections by dragging the `· · ·` handle
 - **Multi-select & merge** — `Cmd+click` sections to select them, then merge into one
 - **Copy button** — copy any section's content with one click (`⎘`)
@@ -28,6 +28,7 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 |---|---|
 | Show / hide | `Cmd+Shift+Space` or click the **N** menu bar icon |
 | New section | `Cmd+Shift+N` or type ` ``` ` anywhere in a section |
+| Search | `Cmd+F` to open, `Esc` to close |
 | Navigate sections | `Tab` / `Shift+Tab` |
 | Select sections | `Cmd+click` |
 | Merge selected | Click **⊕ Merge** (appears when 2+ sections selected) |

@@ -211,8 +211,11 @@ class SectionsController: NSObject {
     private var searchQuery: String = ""
     private var tableView: NSTableView!
     private var mergeButton: NSButton!
+    private var searchField: NSSearchField!
+    private var searchHeightConstraint: NSLayoutConstraint!
     private var selectedIds: Set<String> = []
     private var eventMonitor: Any?
+    private var keyMonitor: Any?
     private var lastKnownTableWidth: CGFloat = 0
 
     private static let pbType = NSPasteboard.PasteboardType("com.quicknote.section")
@@ -228,13 +231,14 @@ class SectionsController: NSObject {
         load()
         if sections.isEmpty { sections = [NoteSection()] }
 
-        // Search field
-        let search = NSSearchField()
-        search.translatesAutoresizingMaskIntoConstraints = false
-        search.placeholderString = "Search..."
-        search.controlSize = .small
-        search.delegate = self
-        parent.addSubview(search)
+        // Search field (hidden until Cmd+F)
+        searchField = NSSearchField()
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+        searchField.placeholderString = "Search..."
+        searchField.controlSize = .small
+        searchField.delegate = self
+        searchField.isHidden = true
+        parent.addSubview(searchField)
 
         // Table
         tableView = NSTableView()
@@ -288,12 +292,14 @@ class SectionsController: NSObject {
         bottomStack.spacing = 16
         parent.addSubview(bottomStack)
 
+        searchHeightConstraint = searchField.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
-            search.topAnchor.constraint(equalTo: parent.topAnchor, constant: 10),
-            search.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 10),
-            search.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -10),
+            searchField.topAnchor.constraint(equalTo: parent.topAnchor, constant: 6),
+            searchField.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 10),
+            searchField.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -10),
+            searchHeightConstraint,
 
-            scroll.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 8),
+            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 4),
             scroll.leadingAnchor.constraint(equalTo: parent.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: parent.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: bottomStack.topAnchor, constant: -4),
@@ -301,6 +307,23 @@ class SectionsController: NSObject {
             bottomStack.centerXAnchor.constraint(equalTo: parent.centerXAnchor),
             bottomStack.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -10),
         ])
+
+        // Cmd+F to reveal search, Esc to dismiss it
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self else { return event }
+            // Cmd+F
+            if event.modifierFlags.contains(.command),
+               event.charactersIgnoringModifiers?.lowercased() == "f" {
+                self.showSearch()
+                return nil
+            }
+            // Escape while search is focused
+            if event.keyCode == 53, self.searchField.currentEditor() != nil {
+                self.hideSearch()
+                return nil
+            }
+            return event
+        }
 
         // Cmd+click monitor for multi-select
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
@@ -327,7 +350,25 @@ class SectionsController: NSObject {
 
     deinit {
         if let m = eventMonitor { NSEvent.removeMonitor(m) }
+        if let m = keyMonitor   { NSEvent.removeMonitor(m) }
         NotificationCenter.default.removeObserver(self)
+    }
+
+    // MARK: Search visibility
+
+    private func showSearch() {
+        searchField.isHidden = false
+        searchHeightConstraint.isActive = false
+        searchField.window?.makeFirstResponder(searchField)
+    }
+
+    private func hideSearch() {
+        searchField.stringValue = ""
+        searchQuery = ""
+        tableView.reloadData()
+        searchField.isHidden = true
+        searchHeightConstraint.isActive = true
+        focusLastSection()
     }
 
     @objc private func tableFrameChanged() {
