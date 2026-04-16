@@ -9,21 +9,32 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 - **Floating HUD panel** — semi-transparent, always on top, across all spaces
 - **Sections** — multiple independent note cards in one window
 - **Search** — filter sections instantly with highlighted matches
-- **Drag to reorder** — rearrange sections by dragging the handle
-- **Copy button** — copy any section's content with one click
+- **Drag to reorder** — rearrange sections by dragging the `· · ·` handle
+- **Multi-select & merge** — `Cmd+click` sections to select them, then merge into one
+- **Copy button** — copy any section's content with one click (`⎘`)
+- **Tab navigation** — `Tab` / `Shift+Tab` cycles focus between sections
+- **Hover highlight** — sections brighten on mouse over
+- **Auto-focus** — reopening the panel focuses the last section you were in
+- **Undo / Redo** — per-keystroke undo, not all-at-once
 - **Auto-save** — notes persist automatically between sessions
+- **Hide on outside click** — panel dismisses when you click away
 - **No dock icon** — lives quietly in the menu bar
 
 ## Shortcuts
 
 | Action | How |
 |---|---|
-| Show / hide | `Cmd+Shift+Space` or click the **N** icon in the menu bar |
-| New section | Type ` ``` ` (3 backticks) at the end of a section |
-| Copy section | Click the `⎘` button in the section header |
-| Delete section | Click the `×` button in the section header |
-| Paste / Undo | `Cmd+V` / `Cmd+Z` |
-| Hide | Click outside the window |
+| Show / hide | `Cmd+Shift+Space` or click the **N** menu bar icon |
+| New section | `Cmd+Shift+N` or type ` ``` ` anywhere in a section |
+| Navigate sections | `Tab` / `Shift+Tab` |
+| Select sections | `Cmd+click` |
+| Merge selected | Click **⊕ Merge** (appears when 2+ sections selected) |
+| Copy section | Click `⎘` in the section header |
+| Delete section | Click `×` in the section header |
+| Cut / Copy / Paste | `Cmd+X` / `Cmd+C` / `Cmd+V` |
+| Undo / Redo | `Cmd+Z` / `Cmd+Shift+Z` |
+| Select all | `Cmd+A` |
+| Hide panel | Click outside the window or `×` button |
 
 ## Install
 
