@@ -14,6 +14,7 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 - **Copy button** — copy any section's content with one click (`⎘`)
 - **Tab navigation** — `Tab` / `Shift+Tab` cycles focus between sections
 - **Hover highlight** — sections brighten on mouse over
+- **Smart links** — URLs auto-collapse to domain; double-click to expand/collapse, `Option+click` to open
 - **Auto-focus** — reopening the panel focuses the last section you were in
 - **Undo / Redo** — per-keystroke undo, not all-at-once
 - **Auto-save** — notes persist automatically between sessions
@@ -31,6 +32,8 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 | Merge selected | Click **⊕ Merge** (appears when 2+ sections selected) |
 | Copy section | Click `⎘` in the section header |
 | Delete section | Click `×` in the section header |
+| Open link | `Option+click` on a URL |
+| Expand / collapse link | Double-click on a URL |
 | Cut / Copy / Paste | `Cmd+X` / `Cmd+C` / `Cmd+V` |
 | Undo / Redo | `Cmd+Z` / `Cmd+Shift+Z` |
 | Select all | `Cmd+A` |

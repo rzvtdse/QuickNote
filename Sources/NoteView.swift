@@ -2,14 +2,48 @@ import AppKit
 
 // MARK: - Custom Text View
 
-class SectionTextView: NSTextView {
+class SectionTextView: NSTextView, NSLayoutManagerDelegate {
     var onFocus: (() -> Void)?
     var onBlur: (() -> Void)?
     var onProgrammaticChange: (() -> Void)?
 
     private var isProcessingLinks = false
-    private static let linkKey    = NSAttributedString.Key("QNLink")
-    private static let toggleKey  = NSAttributedString.Key("QNToggle")
+    fileprivate static let linkKey    = NSAttributedString.Key("QNLink")
+    fileprivate static let toggleKey  = NSAttributedString.Key("QNToggle")
+    fileprivate static let hiddenKey  = NSAttributedString.Key("QNHidden")
+
+    func installLayoutManagerDelegate() {
+        layoutManager?.delegate = self
+    }
+
+    // MARK: - Layout Manager Delegate: truly hide chars tagged QNHidden
+
+    func layoutManager(_ layoutManager: NSLayoutManager,
+                       shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
+                       properties props: UnsafePointer<NSLayoutManager.GlyphProperty>,
+                       characterIndexes charIndexes: UnsafePointer<Int>,
+                       font aFont: NSFont,
+                       forGlyphRange glyphRange: NSRange) -> Int {
+        guard let storage = textStorage else { return 0 }
+        let count = glyphRange.length
+        var newProps = Array(UnsafeBufferPointer(start: props, count: count))
+        var modified = false
+        for i in 0..<count {
+            let charIdx = charIndexes[i]
+            if charIdx < storage.length,
+               storage.attribute(SectionTextView.hiddenKey, at: charIdx, effectiveRange: nil) != nil {
+                newProps[i] = .null
+                modified = true
+            }
+        }
+        if modified {
+            layoutManager.setGlyphs(glyphs, properties: newProps,
+                                    characterIndexes: charIndexes, font: aFont,
+                                    forGlyphRange: glyphRange)
+            return count
+        }
+        return 0
+    }
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
@@ -40,37 +74,60 @@ class SectionTextView: NSTextView {
         detector.enumerateMatches(in: text, options: [], range: fullRange) { match, _, _ in
             guard let match = match, let url = match.url,
                   url.scheme == "http" || url.scheme == "https" else { return }
-            let attrs = storage.attributes(at: match.range.location, effectiveRange: nil)
-            guard attrs[SectionTextView.linkKey] == nil else { return } // already styled
 
             let fullURLStr = url.absoluteString
             let domain = url.host ?? fullURLStr
             let range = match.range
+            let attrs = storage.attributes(at: range.location, effectiveRange: nil)
+            let existingToggle = attrs[SectionTextView.toggleKey] as? String
+            // Preserve user's toggle choice if already set, otherwise start collapsed
+            let toggleState = existingToggle ?? "expand"
 
-            storage.beginEditing()
-            // Mark entire URL range
-            storage.addAttributes([
-                SectionTextView.linkKey:   fullURLStr,
-                SectionTextView.toggleKey: "expand",
-                .foregroundColor:          NSColor.systemCyan.withAlphaComponent(0.85),
-                .underlineStyle:           NSUnderlineStyle.single.rawValue,
-            ], range: range)
-            // Hide path (everything after domain) with clear color
-            self.hidePath(in: storage, fullURL: fullURLStr, domain: domain, linkRange: range)
-            storage.endEditing()
+            self.styleLink(in: storage, fullURL: fullURLStr, domain: domain,
+                          linkRange: range, toggle: toggleState)
         }
     }
 
-    private func hidePath(in storage: NSTextStorage, fullURL: String, domain: String, linkRange: NSRange) {
+    /// Applies link styling based on toggle state ("expand" = currently collapsed,
+    /// "collapse" = currently expanded).
+    private func styleLink(in storage: NSTextStorage, fullURL: String, domain: String,
+                          linkRange: NSRange, toggle: String) {
         let nsText = storage.string as NSString
         let domainRange = nsText.range(of: domain, options: [], range: linkRange)
-        guard domainRange.location != NSNotFound, domainRange.upperBound < linkRange.upperBound else { return }
-        let pathRange = NSRange(location: domainRange.upperBound,
-                                length: linkRange.upperBound - domainRange.upperBound)
+
+        storage.beginEditing()
+
+        // Reset prior styling on the whole link range
+        storage.removeAttribute(SectionTextView.hiddenKey, range: linkRange)
+        storage.removeAttribute(.foregroundColor,          range: linkRange)
+        storage.removeAttribute(.underlineStyle,           range: linkRange)
+
+        // Apply fresh link styling
         storage.addAttributes([
-            .foregroundColor: NSColor.clear,
-            .underlineStyle:  0,
-        ], range: pathRange)
+            SectionTextView.linkKey:   fullURL,
+            SectionTextView.toggleKey: toggle,
+            .foregroundColor:          NSColor.systemCyan.withAlphaComponent(0.85),
+            .underlineStyle:           NSUnderlineStyle.single.rawValue,
+        ], range: linkRange)
+
+        // If collapsed, truly hide the path via a glyph-null marker attribute
+        if toggle == "expand",
+           domainRange.location != NSNotFound,
+           domainRange.upperBound < linkRange.upperBound {
+            let pathRange = NSRange(location: domainRange.upperBound,
+                                    length: linkRange.upperBound - domainRange.upperBound)
+            storage.addAttribute(SectionTextView.hiddenKey, value: true, range: pathRange)
+        }
+
+        storage.endEditing()
+
+        // Force layout manager to regenerate glyphs (for glyph-null changes to take effect)
+        layoutManager?.invalidateGlyphs(forCharacterRange: linkRange,
+                                        changeInLength: 0,
+                                        actualCharacterRange: nil)
+        layoutManager?.invalidateLayout(forCharacterRange: linkRange,
+                                        actualCharacterRange: nil)
+        layoutManager?.invalidateDisplay(forCharacterRange: linkRange)
     }
 
     // MARK: - Mouse
@@ -85,8 +142,8 @@ class SectionTextView: NSTextView {
         let raw = characterIndexForInsertion(at: pt)
         let candidates = [raw, raw > 0 ? raw - 1 : raw].map { min($0, storage.length - 1) }
 
-        // Cmd+click → open URL
-        if event.modifierFlags.contains(.command) {
+        // Option+click → open URL
+        if event.modifierFlags.contains(.option) {
             for idx in candidates {
                 let attrs = storage.attributes(at: idx, effectiveRange: nil)
                 if let urlStr = attrs[SectionTextView.linkKey] as? String,
@@ -122,41 +179,19 @@ class SectionTextView: NSTextView {
                               in: NSRange(location: 0, length: storage.length))
         guard linkRange.length > 0 else { return }
 
-        // Find the domain portion to know where the path starts
         let domain = URL(string: fullURL)?.host ?? fullURL
-        let nsText = storage.string as NSString
-        let domainRange = nsText.range(of: domain, options: [], range: linkRange)
-        guard domainRange.location != NSNotFound, domainRange.upperBound <= linkRange.upperBound else { return }
+        // Flip state: "expand" means currently collapsed → expand it (new state "collapse"),
+        // "collapse" means currently expanded → collapse it (new state "expand")
+        let newToggle = state == "expand" ? "collapse" : "expand"
 
         isProcessingLinks = true
         defer { isProcessingLinks = false }
 
-        storage.beginEditing()
-        if state == "expand" {
-            // Show full URL: make path visible again
-            if domainRange.upperBound < linkRange.upperBound {
-                let pathRange = NSRange(location: domainRange.upperBound,
-                                       length: linkRange.upperBound - domainRange.upperBound)
-                storage.addAttributes([
-                    .foregroundColor: NSColor.systemCyan.withAlphaComponent(0.85),
-                    .underlineStyle:  NSUnderlineStyle.single.rawValue,
-                ], range: pathRange)
-            }
-            storage.addAttribute(SectionTextView.toggleKey, value: "collapse", range: linkRange)
-        } else {
-            // Collapse: hide path with clear color
-            if domainRange.upperBound < linkRange.upperBound {
-                let pathRange = NSRange(location: domainRange.upperBound,
-                                       length: linkRange.upperBound - domainRange.upperBound)
-                storage.addAttributes([
-                    .foregroundColor: NSColor.clear,
-                    .underlineStyle:  0,
-                ], range: pathRange)
-            }
-            storage.addAttribute(SectionTextView.toggleKey, value: "expand", range: linkRange)
-        }
-        storage.endEditing()
-        onProgrammaticChange?()
+        styleLink(in: storage, fullURL: fullURL, domain: domain,
+                  linkRange: linkRange, toggle: newToggle)
+
+        // Force redraw
+        needsDisplay = true
     }
 }
 
@@ -529,6 +564,7 @@ class SectionCellView: NSTableCellView {
                                                         height: CGFloat.greatestFiniteMagnitude)
         textView.textContainerInset = NSSize(width: 2, height: 2)
         textView.allowsUndo = true
+        textView.installLayoutManagerDelegate()
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
