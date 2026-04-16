@@ -118,6 +118,7 @@ class SectionsController: NSObject {
     func update(id: String, content: String) {
         guard let idx = sections.firstIndex(where: { $0.id == id }) else { return }
         sections[idx].content = content
+        UserDefaults.standard.set(id, forKey: "qn_last_section")
         save()
     }
 
@@ -138,6 +139,15 @@ class SectionsController: NSObject {
     }
 
     // MARK: Persistence
+
+    func focusLastSection() {
+        let lastId = UserDefaults.standard.string(forKey: "qn_last_section")
+        let target = lastId.flatMap { id in filteredSections.firstIndex(where: { $0.id == id }) }
+        let row = target ?? filteredSections.count - 1
+        guard row >= 0 else { return }
+        tableView.scrollRowToVisible(row)
+        (tableView.view(atColumn: 0, row: row, makeIfNecessary: true) as? SectionCellView)?.focus()
+    }
 
     func save() {
         UserDefaults.standard.set(try? JSONEncoder().encode(sections), forKey: "qn_sections_v1")

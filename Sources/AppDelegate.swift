@@ -140,5 +140,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            self.sectionsController.focusLastSection()
+        }
     }
 }
