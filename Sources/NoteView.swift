@@ -213,6 +213,7 @@ class SectionsController: NSObject {
     private var mergeButton: NSButton!
     private var selectedIds: Set<String> = []
     private var eventMonitor: Any?
+    private var lastKnownTableWidth: CGFloat = 0
 
     private static let pbType = NSPasteboard.PasteboardType("com.quicknote.section")
 
@@ -251,6 +252,10 @@ class SectionsController: NSObject {
         tableView.delegate = self
         tableView.registerForDraggedTypes([SectionsController.pbType])
         tableView.setDraggingSourceOperationMask(.move, forLocal: true)
+        tableView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(tableFrameChanged),
+                                               name: NSView.frameDidChangeNotification,
+                                               object: tableView)
 
         let scroll = NSScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
@@ -322,6 +327,15 @@ class SectionsController: NSObject {
 
     deinit {
         if let m = eventMonitor { NSEvent.removeMonitor(m) }
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func tableFrameChanged() {
+        let w = tableView.bounds.width
+        guard abs(w - lastKnownTableWidth) > 0.5, w > 0 else { return }
+        lastKnownTableWidth = w
+        tableView.noteHeightOfRows(withIndexesChanged:
+            IndexSet(integersIn: 0..<tableView.numberOfRows))
     }
 
     // MARK: Selection
