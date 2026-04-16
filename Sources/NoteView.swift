@@ -5,6 +5,11 @@ import AppKit
 class SectionTextView: NSTextView {
     var onFocus: (() -> Void)?
     var onBlur: (() -> Void)?
+    var onProgrammaticChange: (() -> Void)?
+
+    private var isProcessingLinks = false
+    private static let linkKey    = NSAttributedString.Key("QNLink")
+    private static let toggleKey  = NSAttributedString.Key("QNToggle")
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
@@ -16,6 +21,142 @@ class SectionTextView: NSTextView {
         let result = super.resignFirstResponder()
         if result { onBlur?() }
         return result
+    }
+
+    // MARK: - Link Processing
+
+    func processLinks() {
+        guard !isProcessingLinks, let storage = textStorage else { return }
+        isProcessingLinks = true
+        defer { isProcessingLinks = false }
+
+        let text = string
+        guard !text.isEmpty,
+              let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+        else { return }
+
+        let fullRange = NSRange(location: 0, length: (text as NSString).length)
+
+        detector.enumerateMatches(in: text, options: [], range: fullRange) { match, _, _ in
+            guard let match = match, let url = match.url,
+                  url.scheme == "http" || url.scheme == "https" else { return }
+            let attrs = storage.attributes(at: match.range.location, effectiveRange: nil)
+            guard attrs[SectionTextView.linkKey] == nil else { return } // already styled
+
+            let fullURLStr = url.absoluteString
+            let domain = url.host ?? fullURLStr
+            let range = match.range
+
+            storage.beginEditing()
+            // Mark entire URL range
+            storage.addAttributes([
+                SectionTextView.linkKey:   fullURLStr,
+                SectionTextView.toggleKey: "expand",
+                .foregroundColor:          NSColor.systemCyan.withAlphaComponent(0.85),
+                .underlineStyle:           NSUnderlineStyle.single.rawValue,
+            ], range: range)
+            // Hide path (everything after domain) with clear color
+            self.hidePath(in: storage, fullURL: fullURLStr, domain: domain, linkRange: range)
+            storage.endEditing()
+        }
+    }
+
+    private func hidePath(in storage: NSTextStorage, fullURL: String, domain: String, linkRange: NSRange) {
+        let nsText = storage.string as NSString
+        let domainRange = nsText.range(of: domain, options: [], range: linkRange)
+        guard domainRange.location != NSNotFound, domainRange.upperBound < linkRange.upperBound else { return }
+        let pathRange = NSRange(location: domainRange.upperBound,
+                                length: linkRange.upperBound - domainRange.upperBound)
+        storage.addAttributes([
+            .foregroundColor: NSColor.clear,
+            .underlineStyle:  0,
+        ], range: pathRange)
+    }
+
+    // MARK: - Mouse
+
+    override func mouseDown(with event: NSEvent) {
+        guard let storage = textStorage, storage.length > 0 else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        let pt = convert(event.locationInWindow, from: nil)
+        let raw = characterIndexForInsertion(at: pt)
+        let candidates = [raw, raw > 0 ? raw - 1 : raw].map { min($0, storage.length - 1) }
+
+        // Cmd+click → open URL
+        if event.modifierFlags.contains(.command) {
+            for idx in candidates {
+                let attrs = storage.attributes(at: idx, effectiveRange: nil)
+                if let urlStr = attrs[SectionTextView.linkKey] as? String,
+                   let url = URL(string: urlStr) {
+                    NSWorkspace.shared.open(url)
+                    return
+                }
+            }
+        }
+
+        // Double-click → toggle expand / collapse
+        if event.clickCount == 2 {
+            for idx in candidates {
+                let attrs = storage.attributes(at: idx, effectiveRange: nil)
+                if let toggle = attrs[SectionTextView.toggleKey] as? String,
+                   let fullURL = attrs[SectionTextView.linkKey] as? String {
+                    handleToggle(state: toggle, fullURL: fullURL, at: idx)
+                    return
+                }
+            }
+        }
+
+        super.mouseDown(with: event)
+    }
+
+    private func handleToggle(state: String, fullURL: String, at idx: Int) {
+        guard let storage = textStorage else { return }
+
+        // Find the full range of this link
+        var linkRange = NSRange(location: 0, length: 0)
+        _ = storage.attribute(SectionTextView.linkKey, at: idx,
+                              longestEffectiveRange: &linkRange,
+                              in: NSRange(location: 0, length: storage.length))
+        guard linkRange.length > 0 else { return }
+
+        // Find the domain portion to know where the path starts
+        let domain = URL(string: fullURL)?.host ?? fullURL
+        let nsText = storage.string as NSString
+        let domainRange = nsText.range(of: domain, options: [], range: linkRange)
+        guard domainRange.location != NSNotFound, domainRange.upperBound <= linkRange.upperBound else { return }
+
+        isProcessingLinks = true
+        defer { isProcessingLinks = false }
+
+        storage.beginEditing()
+        if state == "expand" {
+            // Show full URL: make path visible again
+            if domainRange.upperBound < linkRange.upperBound {
+                let pathRange = NSRange(location: domainRange.upperBound,
+                                       length: linkRange.upperBound - domainRange.upperBound)
+                storage.addAttributes([
+                    .foregroundColor: NSColor.systemCyan.withAlphaComponent(0.85),
+                    .underlineStyle:  NSUnderlineStyle.single.rawValue,
+                ], range: pathRange)
+            }
+            storage.addAttribute(SectionTextView.toggleKey, value: "collapse", range: linkRange)
+        } else {
+            // Collapse: hide path with clear color
+            if domainRange.upperBound < linkRange.upperBound {
+                let pathRange = NSRange(location: domainRange.upperBound,
+                                       length: linkRange.upperBound - domainRange.upperBound)
+                storage.addAttributes([
+                    .foregroundColor: NSColor.clear,
+                    .underlineStyle:  0,
+                ], range: pathRange)
+            }
+            storage.addAttribute(SectionTextView.toggleKey, value: "expand", range: linkRange)
+        }
+        storage.endEditing()
+        onProgrammaticChange?()
     }
 }
 
@@ -403,7 +544,15 @@ class SectionCellView: NSTableCellView {
             self.setActive(true)
         }
         textView.onBlur = { [weak self] in self?.setActive(false) }
+        textView.onProgrammaticChange = { [weak self] in
+            guard let self = self else { return }
+            self.ctrl?.update(id: self.sectionId, content: self.textView.string)
+            self.ctrl?.refreshRowHeight(for: self)
+        }
         addSubview(textView)
+
+        // Process any URLs already in the saved content
+        DispatchQueue.main.async { self.textView.processLinks() }
 
         // Highlight search matches
         if !query.isEmpty, let storage = textView.textStorage {
@@ -497,6 +646,7 @@ extension SectionCellView: NSTextViewDelegate {
 
     func textDidChange(_ notification: Notification) {
         textView.breakUndoCoalescing()
+        textView.processLinks()
         ctrl?.update(id: sectionId, content: textView.string)
         ctrl?.refreshRowHeight(for: self)
     }
