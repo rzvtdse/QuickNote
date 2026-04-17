@@ -81,6 +81,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isFloatingPanel = true
+        panel.isMovableByWindowBackground = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         panel.isOpaque = false
