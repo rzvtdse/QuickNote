@@ -90,13 +90,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.minSize = CGSize(width: 300, height: 220)
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.standardWindowButton(.closeButton)?.isHidden = true
 
         // Remember window size & position across launches
         panel.setFrameAutosaveName("QuickNotePanel")
-
-        let closeBtn = panel.standardWindowButton(.closeButton)
-        closeBtn?.target = self
-        closeBtn?.action = #selector(hidePanel)
 
         guard let contentView = panel.contentView else { return }
         contentView.wantsLayer = true

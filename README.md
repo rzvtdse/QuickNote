@@ -39,7 +39,7 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 | Cut / Copy / Paste | `Cmd+X` / `Cmd+C` / `Cmd+V` |
 | Undo / Redo | `Cmd+Z` / `Cmd+Shift+Z` |
 | Select all | `Cmd+A` |
-| Hide panel | Click outside the window or `×` button |
+| Hide panel | `Cmd+Shift+Space` or click outside the window |
 
 ## Install
 
