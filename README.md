@@ -19,6 +19,7 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 - **Undo / Redo** — per-keystroke undo, not all-at-once
 - **Auto-save** — notes persist automatically between sessions
 - **Remembers layout** — window size and position restore across launches
+- **Drag anywhere** — move the panel by grabbing any empty background area
 - **Hide on outside click** — panel dismisses when you click away
 - **No dock icon** — lives quietly in the menu bar
 
