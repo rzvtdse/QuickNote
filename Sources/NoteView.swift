@@ -48,6 +48,41 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
         return 0
     }
 
+    // MARK: - Plain-text paste (no rich formatting imported)
+
+    override func paste(_ sender: Any?) {
+        guard let str = NSPasteboard.general.string(forType: .string) else { return }
+        let range = selectedRange()
+        guard shouldChangeText(in: range, replacementString: str) else { return }
+        textStorage?.replaceCharacters(in: range, with: str)
+        setSelectedRange(NSRange(location: range.location + (str as NSString).length, length: 0))
+        didChangeText()
+    }
+
+    // Strip everything except strikethrough (and internal link markers) from
+    // the full storage, then re-apply the base font and colour.
+    func stripFormattingExceptStrikethrough() {
+        guard let storage = textStorage, storage.length > 0 else { return }
+        let fullRange = NSRange(location: 0, length: storage.length)
+        let keep: Set<NSAttributedString.Key> = [
+            .strikethroughStyle,
+            SectionTextView.linkKey, SectionTextView.toggleKey, SectionTextView.hiddenKey,
+            .underlineStyle, .foregroundColor,   // re-set below; retained for links
+        ]
+        storage.beginEditing()
+        storage.enumerateAttributes(in: fullRange, options: []) { attrs, subRange, _ in
+            for key in attrs.keys where !keep.contains(key) {
+                storage.removeAttribute(key, range: subRange)
+            }
+        }
+        // Enforce base font and colour everywhere
+        storage.addAttribute(.font,
+                             value: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                             range: fullRange)
+        storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: fullRange)
+        storage.endEditing()
+    }
+
     // MARK: - Strikethrough
 
     func toggleStrikethrough() {
@@ -1159,8 +1194,11 @@ extension SectionCellView: NSTextViewDelegate {
 
     func textDidChange(_ notification: Notification) {
         textView.breakUndoCoalescing()
-        // Keep base font & colour on typing attributes but preserve any rich-text
-        // state (e.g. strikethrough) the user may have set.
+        // Strip any stray rich-text attributes (bold, different fonts, colours from
+        // paste, etc.) while preserving strikethrough and link markers.
+        textView.stripFormattingExceptStrikethrough()
+        // Keep typing attributes clean so the next character is also formatless
+        // (except for any active strikethrough the user has toggled).
         var ta = textView.typingAttributes
         ta[.font] = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         ta[.foregroundColor] = NSColor.labelColor
