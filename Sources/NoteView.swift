@@ -251,8 +251,8 @@ class SectionsController: NSObject {
         bucketBar = NSStackView()
         bucketBar.translatesAutoresizingMaskIntoConstraints = false
         bucketBar.orientation = .horizontal
-        bucketBar.spacing = 4
-        bucketBar.alignment = .centerY
+        bucketBar.spacing = 2
+        bucketBar.alignment = .bottom
         parent.addSubview(bucketBar)
 
         // Search field (hidden until Cmd+F)
@@ -522,38 +522,45 @@ class SectionsController: NSObject {
     private func rebuildBucketBar() {
         bucketBar.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for b in buckets {
-            let btn = NSButton(title: b.name, target: self, action: #selector(bucketTabClicked(_:)))
-            btn.identifier = NSUserInterfaceItemIdentifier(b.id)
-            btn.isBordered = false
-            btn.bezelStyle = .inline
-            btn.font = NSFont.systemFont(ofSize: 12, weight: b.id == activeBucketId ? .semibold : .regular)
-            btn.contentTintColor = b.id == activeBucketId
-                ? NSColor.white.withAlphaComponent(0.95)
-                : NSColor.white.withAlphaComponent(0.4)
-            // Right-click menu for rename / delete
-            let menu = NSMenu()
-            let rename = NSMenuItem(title: "Rename…", action: #selector(bucketRenameMenu(_:)), keyEquivalent: "")
-            rename.target = self
-            rename.representedObject = b.id
-            let del = NSMenuItem(title: "Delete", action: #selector(bucketDeleteMenu(_:)), keyEquivalent: "")
-            del.target = self
-            del.representedObject = b.id
-            menu.addItem(rename)
-            menu.addItem(del)
-            btn.menu = menu
-            bucketBar.addArrangedSubview(btn)
+            let tab = BucketTabView(bucketId: b.id, name: b.name)
+            tab.isActive = (b.id == activeBucketId)
+            tab.onClick = { [weak self] in self?.switchToBucket(b.id) }
+            tab.onRename = { [weak self] newName in self?.renameBucket(id: b.id, to: newName) }
+            tab.onRequestDelete = { [weak self] in self?.deleteBucket(id: b.id) }
+            bucketBar.addArrangedSubview(tab)
         }
         let plus = NSButton(title: "+", target: self, action: #selector(addBucket))
         plus.isBordered = false
         plus.bezelStyle = .inline
-        plus.font = NSFont.systemFont(ofSize: 13, weight: .light)
-        plus.contentTintColor = NSColor.white.withAlphaComponent(0.4)
+        plus.font = NSFont.systemFont(ofSize: 14, weight: .light)
+        plus.contentTintColor = NSColor.white.withAlphaComponent(0.5)
         bucketBar.addArrangedSubview(plus)
     }
 
-    @objc private func bucketTabClicked(_ sender: NSButton) {
-        guard let id = sender.identifier?.rawValue, id != activeBucketId else { return }
-        switchToBucket(id)
+    private func renameBucket(id: String, to newName: String) {
+        guard let idx = buckets.firstIndex(where: { $0.id == id }) else { return }
+        buckets[idx].name = newName
+        save()
+        rebuildBucketBar()
+    }
+
+    private func deleteBucket(id: String) {
+        guard let idx = buckets.firstIndex(where: { $0.id == id }) else { return }
+        if buckets.count <= 1 {
+            let a = NSAlert(); a.messageText = "Can't delete the last bucket."; a.runModal(); return
+        }
+        let confirm = NSAlert()
+        confirm.messageText = "Delete bucket \"\(buckets[idx].name)\"?"
+        confirm.informativeText = "All sections in this bucket will be permanently deleted."
+        confirm.addButton(withTitle: "Delete")
+        confirm.addButton(withTitle: "Cancel")
+        confirm.alertStyle = .warning
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        sections.removeAll { $0.bucketId == id }
+        buckets.remove(at: idx)
+        if activeBucketId == id { activeBucketId = buckets[0].id }
+        save()
+        switchToBucket(activeBucketId)
     }
 
     private func switchToBucket(_ id: String) {
@@ -587,50 +594,6 @@ class SectionsController: NSObject {
             save()
             switchToBucket(b.id)
         }
-    }
-
-    @objc private func bucketRenameMenu(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let idx = buckets.firstIndex(where: { $0.id == id }) else { return }
-        let alert = NSAlert()
-        alert.messageText = "Rename bucket"
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 22))
-        input.stringValue = buckets[idx].name
-        alert.accessoryView = input
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
-            let name = input.stringValue.trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty else { return }
-            buckets[idx].name = name
-            save()
-            rebuildBucketBar()
-        }
-    }
-
-    @objc private func bucketDeleteMenu(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let idx = buckets.firstIndex(where: { $0.id == id }) else { return }
-        if buckets.count <= 1 {
-            let a = NSAlert()
-            a.messageText = "Can't delete the last bucket."
-            a.runModal()
-            return
-        }
-        let confirm = NSAlert()
-        confirm.messageText = "Delete bucket \"\(buckets[idx].name)\"?"
-        confirm.informativeText = "All sections in this bucket will be permanently deleted."
-        confirm.addButton(withTitle: "Delete")
-        confirm.addButton(withTitle: "Cancel")
-        confirm.alertStyle = .warning
-        guard confirm.runModal() == .alertFirstButtonReturn else { return }
-        sections.removeAll { $0.bucketId == id }
-        buckets.remove(at: idx)
-        if activeBucketId == id {
-            activeBucketId = buckets[0].id
-        }
-        save()
-        switchToBucket(activeBucketId)
     }
 
     // MARK: Persistence
@@ -958,4 +921,192 @@ extension SectionCellView: NSTextViewDelegate {
         }
         return false
     }
+}
+
+// MARK: - Chrome-style Bucket Tab
+
+class BucketTabView: NSView, NSTextFieldDelegate {
+    let bucketId: String
+    var name: String { didSet { label.stringValue = name; invalidateIntrinsicContentSize() } }
+    var isActive: Bool = false { didSet { updateStyling() } }
+
+    var onClick: (() -> Void)?
+    var onRename: ((String) -> Void)?
+    var onRequestDelete: (() -> Void)?
+
+    private let label = NSTextField(labelWithString: "")
+    private var editor: NSTextField?
+    private var trackingArea: NSTrackingArea?
+    private var isHovered = false
+
+    init(bucketId: String, name: String) {
+        self.bucketId = bucketId
+        self.name = name
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.masksToBounds = true
+
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.stringValue = name
+        label.font = NSFont.systemFont(ofSize: 12)
+        label.textColor = NSColor.white.withAlphaComponent(0.65)
+        label.lineBreakMode = .byTruncatingTail
+        label.isSelectable = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 1),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+        ])
+
+        // Right-click menu for delete only
+        let menu = NSMenu()
+        let del = NSMenuItem(title: "Delete", action: #selector(requestDelete), keyEquivalent: "")
+        del.target = self
+        menu.addItem(del)
+        self.menu = menu
+
+        updateStyling()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: label.intrinsicContentSize.width + 28, height: 26)
+    }
+
+    // MARK: Tracking / hover
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = trackingArea { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: bounds,
+                               options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t)
+        trackingArea = t
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        updateStyling()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        updateStyling()
+    }
+
+    // MARK: Click / double-click
+
+    override func mouseDown(with event: NSEvent) {
+        // Don't fight the inline editor
+        if editor != nil { super.mouseDown(with: event); return }
+        if event.clickCount == 2 {
+            beginEditing()
+        } else {
+            onClick?()
+        }
+    }
+
+    // MARK: Drawing — Chrome-style rounded top corners
+
+    override func draw(_ dirtyRect: NSRect) {
+        let r = bounds
+        let radius: CGFloat = 8
+        let path = NSBezierPath()
+        // Start bottom-left, go up, arc top-left, across, arc top-right, down
+        path.move(to: NSPoint(x: 0, y: 0))
+        path.line(to: NSPoint(x: 0, y: r.height - radius))
+        path.curve(to: NSPoint(x: radius, y: r.height),
+                   controlPoint1: NSPoint(x: 0, y: r.height - radius / 2),
+                   controlPoint2: NSPoint(x: radius / 2, y: r.height))
+        path.line(to: NSPoint(x: r.width - radius, y: r.height))
+        path.curve(to: NSPoint(x: r.width, y: r.height - radius),
+                   controlPoint1: NSPoint(x: r.width - radius / 2, y: r.height),
+                   controlPoint2: NSPoint(x: r.width, y: r.height - radius / 2))
+        path.line(to: NSPoint(x: r.width, y: 0))
+        path.close()
+
+        let bg: NSColor
+        if isActive {
+            bg = NSColor.white.withAlphaComponent(0.20)
+        } else if isHovered {
+            bg = NSColor.white.withAlphaComponent(0.10)
+        } else {
+            bg = NSColor.white.withAlphaComponent(0.04)
+        }
+        bg.setFill()
+        path.fill()
+
+        if isActive {
+            NSColor.white.withAlphaComponent(0.25).setStroke()
+            path.lineWidth = 0.5
+            path.stroke()
+        }
+    }
+
+    private func updateStyling() {
+        label.textColor = isActive
+            ? NSColor.white.withAlphaComponent(0.95)
+            : NSColor.white.withAlphaComponent(0.6)
+        label.font = NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
+        needsDisplay = true
+    }
+
+    // MARK: Inline rename editor
+
+    func beginEditing() {
+        guard editor == nil else { return }
+        let tf = NSTextField(frame: .zero)
+        tf.translatesAutoresizingMaskIntoConstraints = false
+        tf.stringValue = name
+        tf.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        tf.textColor = NSColor.white
+        tf.backgroundColor = NSColor.black.withAlphaComponent(0.4)
+        tf.isBordered = false
+        tf.focusRingType = .none
+        tf.drawsBackground = true
+        tf.delegate = self
+        addSubview(tf)
+        NSLayoutConstraint.activate([
+            tf.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 1),
+            tf.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            tf.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            tf.heightAnchor.constraint(equalToConstant: 18),
+        ])
+        label.isHidden = true
+        editor = tf
+        window?.makeFirstResponder(tf)
+        tf.selectText(nil)
+    }
+
+    private func commitEditing(cancel: Bool) {
+        guard let tf = editor else { return }
+        let newName = tf.stringValue.trimmingCharacters(in: .whitespaces)
+        tf.removeFromSuperview()
+        editor = nil
+        label.isHidden = false
+        if !cancel, !newName.isEmpty, newName != name {
+            onRename?(newName)
+        }
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if selector == #selector(NSResponder.insertNewline(_:)) {
+            commitEditing(cancel: false)
+            return true
+        }
+        if selector == #selector(NSResponder.cancelOperation(_:)) {
+            commitEditing(cancel: true)
+            return true
+        }
+        return false
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        commitEditing(cancel: false)
+    }
+
+    @objc private func requestDelete() { onRequestDelete?() }
 }
