@@ -594,22 +594,27 @@ class SectionsController: NSObject {
     }
 
     @objc private func addBucket() {
-        let alert = NSAlert()
-        alert.messageText = "New bucket"
-        alert.informativeText = "Name your bucket:"
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 22))
-        input.stringValue = "Bucket \(buckets.count + 1)"
-        alert.accessoryView = input
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
-            let name = input.stringValue.trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty else { return }
-            let b = NoteBucket(name: name)
-            buckets.append(b)
+        let b = NoteBucket(name: "Bucket \(buckets.count + 1)")
+        buckets.append(b)
+        save()
+        rebuildBucketBar()
+        activeBucketId = b.id
+        UserDefaults.standard.set(b.id, forKey: "qn_active_bucket")
+        if !sections.contains(where: { $0.bucketId == b.id }) {
+            sections.append(NoteSection(bucketId: b.id))
             save()
-            switchToBucket(b.id)
         }
+        for v in bucketBar.arrangedSubviews {
+            if let tab = v as? BucketTabView {
+                tab.isActive = (tab.bucketId == b.id)
+                // Immediately open the rename editor on the newly added tab
+                if tab.bucketId == b.id {
+                    DispatchQueue.main.async { tab.beginEditing() }
+                }
+            }
+        }
+        tableView.reloadData()
+        updateSelectionUI()
     }
 
     // MARK: Persistence
@@ -945,15 +950,17 @@ extension SectionCellView: NSTextViewDelegate {
 
 class BucketTabView: NSView, NSTextFieldDelegate {
     let bucketId: String
-    var name: String { didSet { label.stringValue = name; invalidateIntrinsicContentSize() } }
+    var name: String {
+        didSet { if !nameField.isEditable { nameField.stringValue = name }
+                 invalidateIntrinsicContentSize() }
+    }
     var isActive: Bool = false { didSet { updateStyling() } }
 
     var onClick: (() -> Void)?
     var onRename: ((String) -> Void)?
     var onRequestDelete: (() -> Void)?
 
-    private let label = NSTextField(labelWithString: "")
-    private var editor: NSTextField?
+    private let nameField = NSTextField()
     private var trackingArea: NSTrackingArea?
     private var isHovered = false
 
@@ -964,17 +971,24 @@ class BucketTabView: NSView, NSTextFieldDelegate {
         wantsLayer = true
         layer?.masksToBounds = true
 
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.stringValue = name
-        label.font = NSFont.systemFont(ofSize: 12)
-        label.textColor = NSColor.white.withAlphaComponent(0.65)
-        label.lineBreakMode = .byTruncatingTail
-        label.isSelectable = false
-        addSubview(label)
+        nameField.translatesAutoresizingMaskIntoConstraints = false
+        nameField.stringValue = name
+        nameField.isEditable = false
+        nameField.isSelectable = false
+        nameField.isBordered = false
+        nameField.drawsBackground = false
+        nameField.backgroundColor = .clear
+        nameField.focusRingType = .none
+        nameField.font = NSFont.systemFont(ofSize: 12)
+        nameField.textColor = NSColor.white.withAlphaComponent(0.65)
+        nameField.lineBreakMode = .byTruncatingTail
+        nameField.delegate = self
+        nameField.cell?.usesSingleLineMode = true
+        addSubview(nameField)
         NSLayoutConstraint.activate([
-            label.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 1),
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            nameField.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 1),
+            nameField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            nameField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
         ])
 
         // Right-click menu for delete only
@@ -990,7 +1004,7 @@ class BucketTabView: NSView, NSTextFieldDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: label.intrinsicContentSize.width + 28, height: 26)
+        NSSize(width: nameField.intrinsicContentSize.width + 24, height: 26)
     }
 
     // Prevent the window-background-drag from swallowing clicks on the tab
@@ -1021,9 +1035,9 @@ class BucketTabView: NSView, NSTextFieldDelegate {
     // MARK: Click / double-click
 
     override func mouseDown(with event: NSEvent) {
-        // Don't fight the inline editor
-        if editor != nil { super.mouseDown(with: event); return }
-        if event.clickCount == 2 {
+        // If we're already editing, let the text field handle the click normally
+        if nameField.isEditable { super.mouseDown(with: event); return }
+        if event.clickCount >= 2 {
             beginEditing()
         } else {
             onClick?()
@@ -1068,54 +1082,45 @@ class BucketTabView: NSView, NSTextFieldDelegate {
     }
 
     private func updateStyling() {
-        label.textColor = isActive
-            ? NSColor.white.withAlphaComponent(0.95)
-            : NSColor.white.withAlphaComponent(0.6)
-        label.font = NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
+        if !nameField.isEditable {
+            nameField.textColor = isActive
+                ? NSColor.white.withAlphaComponent(0.95)
+                : NSColor.white.withAlphaComponent(0.6)
+            nameField.font = NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
+        }
         needsDisplay = true
     }
 
-    // MARK: Inline rename editor
+    // MARK: Inline rename
 
     func beginEditing() {
-        guard editor == nil else { return }
-        let tf = NSTextField(frame: .zero)
-        tf.translatesAutoresizingMaskIntoConstraints = false
-        tf.stringValue = name
-        tf.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        tf.textColor = NSColor.white
-        tf.backgroundColor = NSColor.black.withAlphaComponent(0.4)
-        tf.isBordered = false
-        tf.focusRingType = .none
-        tf.drawsBackground = true
-        tf.delegate = self
-        addSubview(tf)
-        NSLayoutConstraint.activate([
-            tf.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 1),
-            tf.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            tf.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            tf.heightAnchor.constraint(equalToConstant: 18),
-        ])
-        label.isHidden = true
-        editor = tf
-        // Async so this focus runs AFTER any pending focusLastSection that
-        // a single-click triggered on this same tab.
+        guard !nameField.isEditable else { return }
+        nameField.isEditable = true
+        nameField.isSelectable = true
+        nameField.drawsBackground = true
+        nameField.backgroundColor = NSColor.black.withAlphaComponent(0.45)
+        nameField.textColor = NSColor.white
+        // Defer focus so it wins any pending focusLastSection the click scheduled
         DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.editor === tf else { return }
-            self.window?.makeFirstResponder(tf)
-            tf.selectText(nil)
+            guard let self = self, self.nameField.isEditable else { return }
+            self.window?.makeFirstResponder(self.nameField)
+            self.nameField.selectText(nil)
         }
     }
 
     private func commitEditing(cancel: Bool) {
-        guard let tf = editor else { return }
-        let newName = tf.stringValue.trimmingCharacters(in: .whitespaces)
-        tf.removeFromSuperview()
-        editor = nil
-        label.isHidden = false
-        if !cancel, !newName.isEmpty, newName != name {
+        guard nameField.isEditable else { return }
+        let newName = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+        nameField.isEditable = false
+        nameField.isSelectable = false
+        nameField.drawsBackground = false
+        nameField.backgroundColor = .clear
+        if cancel || newName.isEmpty {
+            nameField.stringValue = name
+        } else if newName != name {
             onRename?(newName)
         }
+        updateStyling()
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
