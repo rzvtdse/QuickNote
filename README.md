@@ -7,17 +7,21 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 ## Features
 
 - **Floating HUD panel** — semi-transparent, always on top, across all spaces
-- **Buckets** — group sections into Chrome-style tabs; click `+` to add, double-click a tab to rename, right-click to delete
+- **Buckets** — group sections into tabs; click `+` to add, double-click a tab to rename, click `×` on a tab to close
 - **Sections** — multiple independent note cards in one window
 - **Search** — `Cmd+F` to open the search bar, `Esc` to dismiss
-- **Drag to reorder** — rearrange sections by dragging the `· · ·` handle
+- **Drag to reorder** — rearrange sections by dragging the handle
 - **Multi-select & merge** — `Cmd+click` sections to select them, then merge into one
-- **Copy button** — copy any section's content with one click (`⎘`)
+- **Copy button** — copy any section's content with one click
+- **Duplicate button** — duplicate a section and place it directly below, cursor moves to the new one
 - **Tab navigation** — `Tab` / `Shift+Tab` cycles focus between sections
 - **Hover highlight** — sections brighten on mouse over
 - **Smart links** — URLs auto-collapse to domain; double-click to expand/collapse, `Option+click` to open
 - **Auto-focus** — reopening the panel focuses the last section you were in
+- **Per-bucket focus** — switching tabs resumes at the last section you edited in that tab
 - **Undo / Redo** — per-keystroke undo, not all-at-once
+- **Restore deleted section** — `Option+Shift+T` or click the **Undo** button that appears after deletion
+- **Restore closed tab** — `Cmd+Shift+T` restores the most recently closed tab with all its sections
 - **Auto-save** — notes persist automatically between sessions
 - **Remembers layout** — window size and position restore across launches
 - **Drag anywhere** — move the panel by grabbing any empty background area
@@ -33,12 +37,15 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 | Switch bucket | Click a tab at the top |
 | New bucket | Click `+` in the tab bar |
 | Rename bucket | Double-click its tab |
-| Delete bucket | Right-click its tab → Delete |
+| Close bucket | Click `×` on its tab |
+| Restore closed bucket | `Cmd+Shift+T` |
+| Restore deleted section | `Option+Shift+T` |
 | Search | `Cmd+F` to open, `Esc` to close |
 | Navigate sections | `Tab` / `Shift+Tab` |
 | Select sections | `Cmd+click` |
-| Merge selected | Click **⊕ Merge** (appears when 2+ sections selected) |
-| Copy section | Click `⎘` in the section header |
+| Merge selected | Click **Merge** (appears when 2+ sections selected) |
+| Copy section | Click copy icon in the section header |
+| Duplicate section | Click duplicate icon in the section header |
 | Delete section | Click `×` in the section header |
 | Open link | `Option+click` on a URL |
 | Expand / collapse link | Double-click on a URL |

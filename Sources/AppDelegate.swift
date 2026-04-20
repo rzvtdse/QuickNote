@@ -98,12 +98,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         guard let contentView = panel.contentView else { return }
         contentView.wantsLayer = true
-        contentView.layer?.cornerRadius = 12
+        contentView.layer?.cornerRadius = 10
         contentView.layer?.masksToBounds = true
 
         let fx = NSVisualEffectView(frame: contentView.bounds)
         fx.autoresizingMask = [.width, .height]
-        fx.material = .hudWindow
+        fx.material = .sidebar
         fx.blendingMode = .behindWindow
         fx.state = .active
         contentView.addSubview(fx)

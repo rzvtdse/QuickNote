@@ -221,13 +221,18 @@ class SectionsController: NSObject {
     private var sections: [NoteSection] = []
     private var buckets: [NoteBucket] = []
     private var activeBucketId: String = ""
+    private var bucketHistory: [String] = []   // most-recent-last
     private var searchQuery: String = ""
     private var tableView: NSTableView!
     private var mergeButton: NSButton!
+    private var undoSectionButton: NSButton!
+    private var undoSectionTimer: Timer?
     private var searchField: NSSearchField!
     private var searchHeightConstraint: NSLayoutConstraint!
     private var bucketBar: NSStackView!
     private var selectedIds: Set<String> = []
+    private var deletedBucketStack: [(bucket: NoteBucket, sections: [NoteSection])] = []
+    private var deletedSectionStack: [(section: NoteSection, index: Int)] = []
     private var eventMonitor: Any?
     private var keyMonitor: Any?
     private var lastKnownTableWidth: CGFloat = 0
@@ -251,17 +256,22 @@ class SectionsController: NSObject {
         bucketBar = NSStackView()
         bucketBar.translatesAutoresizingMaskIntoConstraints = false
         bucketBar.orientation = .horizontal
-        bucketBar.spacing = 2
-        bucketBar.alignment = .bottom
+        bucketBar.spacing = 4
+        bucketBar.alignment = .centerY
+        bucketBar.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
         parent.addSubview(bucketBar)
 
         // Search field (hidden until Cmd+F)
         searchField = NSSearchField()
         searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.placeholderString = "Search..."
-        searchField.controlSize = .small
+        searchField.placeholderString = "Search…"
+        searchField.controlSize = .regular
         searchField.delegate = self
         searchField.isHidden = true
+        if let cell = searchField.cell as? NSSearchFieldCell {
+            cell.searchButtonCell?.image = NSImage(systemSymbolName: "magnifyingglass",
+                                                   accessibilityDescription: nil)
+        }
         parent.addSubview(searchField)
 
         // Table
@@ -294,57 +304,84 @@ class SectionsController: NSObject {
         scroll.borderType = .noBorder
         parent.addSubview(scroll)
 
-        // Bottom buttons
-        let addBtn = NSButton(title: "+ New Section", target: self, action: #selector(addSection))
+        let addBtn = NSButton(title: "New Section", target: self, action: #selector(addSection))
         addBtn.translatesAutoresizingMaskIntoConstraints = false
         addBtn.isBordered = false
         addBtn.bezelStyle = .inline
-        addBtn.font = NSFont.systemFont(ofSize: 11)
-        addBtn.contentTintColor = NSColor.white.withAlphaComponent(0.4)
+        addBtn.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
+        addBtn.imagePosition = .imageLeading
+        addBtn.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        addBtn.contentTintColor = NSColor.secondaryLabelColor
 
-        mergeButton = NSButton(title: "⊕ Merge", target: self, action: #selector(mergeSections))
+        mergeButton = NSButton(title: "Merge", target: self, action: #selector(mergeSections))
         mergeButton.translatesAutoresizingMaskIntoConstraints = false
         mergeButton.isBordered = false
         mergeButton.bezelStyle = .inline
-        mergeButton.font = NSFont.systemFont(ofSize: 11)
-        mergeButton.contentTintColor = NSColor.systemBlue.withAlphaComponent(0.85)
+        mergeButton.image = NSImage(systemSymbolName: "arrow.triangle.merge", accessibilityDescription: nil)
+        mergeButton.imagePosition = .imageLeading
+        mergeButton.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        mergeButton.contentTintColor = NSColor.controlAccentColor
         mergeButton.isHidden = true
 
-        let bottomStack = NSStackView(views: [addBtn, mergeButton])
+        undoSectionButton = NSButton(title: "Undo", target: self, action: #selector(undoDeleteSection))
+        undoSectionButton.translatesAutoresizingMaskIntoConstraints = false
+        undoSectionButton.isBordered = false
+        undoSectionButton.bezelStyle = .inline
+        undoSectionButton.image = NSImage(systemSymbolName: "arrow.uturn.backward", accessibilityDescription: nil)
+        undoSectionButton.imagePosition = .imageLeading
+        undoSectionButton.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        undoSectionButton.contentTintColor = NSColor.controlAccentColor
+        undoSectionButton.isHidden = true
+
+        let bottomStack = NSStackView(views: [addBtn, mergeButton, undoSectionButton])
         bottomStack.translatesAutoresizingMaskIntoConstraints = false
         bottomStack.orientation = .horizontal
         bottomStack.spacing = 16
+        bottomStack.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
         parent.addSubview(bottomStack)
 
         searchHeightConstraint = searchField.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
-            bucketBar.topAnchor.constraint(equalTo: parent.topAnchor, constant: 6),
-            bucketBar.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 10),
-            bucketBar.trailingAnchor.constraint(lessThanOrEqualTo: parent.trailingAnchor, constant: -10),
+            bucketBar.topAnchor.constraint(equalTo: parent.topAnchor, constant: 8),
+            bucketBar.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 8),
+            bucketBar.trailingAnchor.constraint(lessThanOrEqualTo: parent.trailingAnchor, constant: -8),
+            bucketBar.heightAnchor.constraint(equalToConstant: 32),
 
-            searchField.topAnchor.constraint(equalTo: bucketBar.bottomAnchor, constant: 6),
-            searchField.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 10),
-            searchField.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -10),
+            searchField.topAnchor.constraint(equalTo: bucketBar.bottomAnchor, constant: 8),
+            searchField.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 8),
+            searchField.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -8),
             searchHeightConstraint,
 
-            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 10),
-            scroll.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 10),
-            scroll.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -10),
-            scroll.bottomAnchor.constraint(equalTo: bottomStack.topAnchor, constant: -10),
+            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
+            scroll.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 8),
+            scroll.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -8),
+            scroll.bottomAnchor.constraint(equalTo: bottomStack.topAnchor, constant: -8),
 
             bottomStack.centerXAnchor.constraint(equalTo: parent.centerXAnchor),
             bottomStack.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -10),
+            bottomStack.heightAnchor.constraint(equalToConstant: 28),
         ])
 
         rebuildBucketBar()
 
-        // Cmd+F to reveal search, Esc to dismiss it
+        // Cmd+F to reveal search, Esc to dismiss it, Cmd+Shift+T to restore deleted bucket
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return event }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let ch = event.charactersIgnoringModifiers?.lowercased()
             // Cmd+F
-            if event.modifierFlags.contains(.command),
-               event.charactersIgnoringModifiers?.lowercased() == "f" {
+            if flags == .command, ch == "f" {
                 self.showSearch()
+                return nil
+            }
+            // Cmd+Shift+T — restore last deleted bucket
+            if flags == [.command, .shift], ch == "t" {
+                self.restoreLastDeletedBucket()
+                return nil
+            }
+            // Option+Shift+T — restore last deleted section
+            if flags == [.option, .shift], ch == "t" {
+                self.restoreLastDeletedSection()
                 return nil
             }
             // Escape while search is focused
@@ -482,13 +519,79 @@ class SectionsController: NSObject {
     }
 
     func delete(id: String) {
-        sections.removeAll { $0.id == id }
+        if let idx = sections.firstIndex(where: { $0.id == id }) {
+            deletedSectionStack.append((section: sections[idx], index: idx))
+            sections.remove(at: idx)
+        }
         if !sections.contains(where: { $0.bucketId == activeBucketId }) {
             sections.append(NoteSection(bucketId: activeBucketId))
         }
         selectedIds.removeAll()
         tableView.reloadData()
         save()
+        DispatchQueue.main.async { self.focusLastSection() }
+        showUndoSectionButton()
+    }
+
+    func duplicate(id: String) {
+        guard let idx = sections.firstIndex(where: { $0.id == id }) else { return }
+        var copy = sections[idx]
+        copy = NoteSection(content: copy.content, bucketId: copy.bucketId)
+        sections.insert(copy, at: idx + 1)
+        save()
+        tableView.reloadData()
+        // Focus the new duplicate
+        DispatchQueue.main.async {
+            let filtered = self.filteredSections
+            if let row = filtered.firstIndex(where: { $0.id == copy.id }) {
+                self.tableView.scrollRowToVisible(row)
+                if let cell = self.tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SectionCellView {
+                    cell.focus()
+                }
+            }
+        }
+    }
+
+    private func showUndoSectionButton() {
+        undoSectionButton.isHidden = false
+        undoSectionTimer?.invalidate()
+        undoSectionTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
+            self?.undoSectionButton.isHidden = true
+        }
+    }
+
+    @objc private func undoDeleteSection() {
+        undoSectionTimer?.invalidate()
+        undoSectionButton.isHidden = true
+        restoreLastDeletedSection()
+    }
+
+    private func restoreLastDeletedSection() {
+        guard let entry = deletedSectionStack.popLast() else { return }
+        // If the section belonged to a bucket that still exists, restore there
+        let targetBucket = entry.section.bucketId ?? activeBucketId
+        guard buckets.contains(where: { $0.id == targetBucket }) else { return }
+        let insertIdx = min(entry.index, sections.count)
+        sections.insert(entry.section, at: insertIdx)
+        save()
+        // Switch to the bucket if needed
+        if targetBucket != activeBucketId {
+            bucketHistory.append(activeBucketId)
+            activeBucketId = targetBucket
+            UserDefaults.standard.set(activeBucketId, forKey: "qn_active_bucket")
+            rebuildBucketBar()
+        }
+        tableView.reloadData()
+        // Focus the restored section
+        DispatchQueue.main.async {
+            let filtered = self.filteredSections
+            if let row = filtered.firstIndex(where: { $0.id == entry.section.id }) {
+                self.tableView.scrollRowToVisible(row)
+                if let cell = self.tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SectionCellView {
+                    cell.focus()
+                }
+            }
+        }
     }
 
     func refreshRowHeight(for view: NSView) {
@@ -535,13 +638,19 @@ class SectionsController: NSObject {
             tab.onClick = { [weak self] in self?.switchToBucket(b.id) }
             tab.onRename = { [weak self] newName in self?.renameBucket(id: b.id, to: newName) }
             tab.onRequestDelete = { [weak self] in self?.deleteBucket(id: b.id) }
+            tab.onDidEndEditing = { [weak self] in self?.focusLastSection() }
             bucketBar.addArrangedSubview(tab)
         }
         let plus = NSButton(title: "+", target: self, action: #selector(addBucket))
         plus.isBordered = false
         plus.bezelStyle = .inline
-        plus.font = NSFont.systemFont(ofSize: 14, weight: .light)
-        plus.contentTintColor = NSColor.white.withAlphaComponent(0.5)
+        plus.font = NSFont.systemFont(ofSize: 16, weight: .light)
+        plus.contentTintColor = NSColor.white.withAlphaComponent(0.45)
+        plus.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            plus.widthAnchor.constraint(equalToConstant: 24),
+            plus.heightAnchor.constraint(equalToConstant: 24),
+        ])
         bucketBar.addArrangedSubview(plus)
     }
 
@@ -554,25 +663,53 @@ class SectionsController: NSObject {
 
     private func deleteBucket(id: String) {
         guard let idx = buckets.firstIndex(where: { $0.id == id }) else { return }
-        if buckets.count <= 1 {
-            let a = NSAlert(); a.messageText = "Can't delete the last bucket."; a.runModal(); return
-        }
-        let confirm = NSAlert()
-        confirm.messageText = "Delete bucket \"\(buckets[idx].name)\"?"
-        confirm.informativeText = "All sections in this bucket will be permanently deleted."
-        confirm.addButton(withTitle: "Delete")
-        confirm.addButton(withTitle: "Cancel")
-        confirm.alertStyle = .warning
-        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        // Don't allow deleting the last bucket
+        guard buckets.count > 1 else { return }
+        // Save to undo stack before removing
+        let savedSections = sections.filter { $0.bucketId == id }
+        deletedBucketStack.append((bucket: buckets[idx], sections: savedSections))
+        let wasActive = (id == activeBucketId)
         sections.removeAll { $0.bucketId == id }
         buckets.remove(at: idx)
-        if activeBucketId == id { activeBucketId = buckets[0].id }
+        bucketHistory.removeAll { $0 == id }
+        if wasActive {
+            // Switch to most recently used bucket that still exists
+            let newActive = bucketHistory.last(where: { bid in buckets.contains { $0.id == bid } })
+                ?? buckets[max(0, idx - 1)].id
+            activeBucketId = newActive
+            UserDefaults.standard.set(newActive, forKey: "qn_active_bucket")
+        }
         save()
-        switchToBucket(activeBucketId)
+        // Rebuild the bar (deleted tab must disappear) then reload table
+        rebuildBucketBar()
+        selectedIds.removeAll()
+        tableView.reloadData()
+        updateSelectionUI()
+        DispatchQueue.main.async { self.focusLastSection() }
+    }
+
+    private func restoreLastDeletedBucket() {
+        guard let entry = deletedBucketStack.popLast() else { return }
+        buckets.append(entry.bucket)
+        // Restore sections; give them back the bucket id in case it was altered
+        let restored = entry.sections.isEmpty
+            ? [NoteSection(bucketId: entry.bucket.id)]
+            : entry.sections
+        sections.append(contentsOf: restored)
+        save()
+        // Set active id before rebuilding so the bar renders with the right tab highlighted
+        activeBucketId = entry.bucket.id
+        UserDefaults.standard.set(activeBucketId, forKey: "qn_active_bucket")
+        rebuildBucketBar()
+        selectedIds.removeAll()
+        tableView.reloadData()
+        updateSelectionUI()
+        DispatchQueue.main.async { self.focusLastSection() }
     }
 
     private func switchToBucket(_ id: String) {
         if id == activeBucketId { return }
+        bucketHistory.append(activeBucketId)
         activeBucketId = id
         UserDefaults.standard.set(id, forKey: "qn_active_bucket")
         selectedIds.removeAll()
@@ -594,27 +731,19 @@ class SectionsController: NSObject {
     }
 
     @objc private func addBucket() {
-        let b = NoteBucket(name: "Bucket \(buckets.count + 1)")
+        let b = NoteBucket(name: "Note \(buckets.count + 1)")
         buckets.append(b)
-        save()
-        rebuildBucketBar()
+        bucketHistory.append(activeBucketId)
         activeBucketId = b.id
         UserDefaults.standard.set(b.id, forKey: "qn_active_bucket")
         if !sections.contains(where: { $0.bucketId == b.id }) {
             sections.append(NoteSection(bucketId: b.id))
-            save()
         }
-        for v in bucketBar.arrangedSubviews {
-            if let tab = v as? BucketTabView {
-                tab.isActive = (tab.bucketId == b.id)
-                // Immediately open the rename editor on the newly added tab
-                if tab.bucketId == b.id {
-                    DispatchQueue.main.async { tab.beginEditing() }
-                }
-            }
-        }
+        save()
+        rebuildBucketBar()
         tableView.reloadData()
         updateSelectionUI()
+        DispatchQueue.main.async { self.focusLastSection() }
     }
 
     // MARK: Persistence
@@ -750,35 +879,52 @@ class SectionCellView: NSTableCellView {
         self.ctrl = ctrl
 
         wantsLayer = true
-        layer?.cornerRadius = 8
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.07).cgColor
+        layer?.cornerRadius = 5
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
 
-        // Header bar
+        // Header bar — drag handle centred, buttons on the right
         let header = NSView()
         header.translatesAutoresizingMaskIntoConstraints = false
         addSubview(header)
 
-        let handle = NSTextField(labelWithString: "· · ·")
+        // Drag handle — three dots using SF Symbol
+        let handleImg = NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Drag")
+        let handle = NSImageView(image: handleImg ?? NSImage())
         handle.translatesAutoresizingMaskIntoConstraints = false
-        handle.textColor = NSColor.white.withAlphaComponent(0.2)
-        handle.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+        handle.contentTintColor = NSColor.tertiaryLabelColor
+        handle.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular)
         header.addSubview(handle)
 
-        let copy = NSButton(title: "⎘", target: self, action: #selector(copySelf))
+        // Copy button
+        let copy = NSButton(title: "", target: self, action: #selector(copySelf))
         copy.translatesAutoresizingMaskIntoConstraints = false
         copy.isBordered = false
         copy.bezelStyle = .inline
-        copy.font = NSFont.systemFont(ofSize: 13, weight: .light)
-        copy.contentTintColor = NSColor.white.withAlphaComponent(0.3)
-        copy.toolTip = "Copy"
+        copy.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
+        copy.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .light)
+        copy.contentTintColor = NSColor.tertiaryLabelColor
+        copy.toolTip = "Copy section"
         header.addSubview(copy)
 
-        let del = NSButton(title: "×", target: self, action: #selector(deleteSelf))
+        // Duplicate button
+        let dup = NSButton(title: "", target: self, action: #selector(duplicateSelf))
+        dup.translatesAutoresizingMaskIntoConstraints = false
+        dup.isBordered = false
+        dup.bezelStyle = .inline
+        dup.image = NSImage(systemSymbolName: "plus.square.on.square", accessibilityDescription: "Duplicate")
+        dup.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .light)
+        dup.contentTintColor = NSColor.tertiaryLabelColor
+        dup.toolTip = "Duplicate section"
+        header.addSubview(dup)
+
+        // Delete button
+        let del = NSButton(title: "", target: self, action: #selector(deleteSelf))
         del.translatesAutoresizingMaskIntoConstraints = false
         del.isBordered = false
         del.bezelStyle = .inline
-        del.font = NSFont.systemFont(ofSize: 15, weight: .light)
-        del.contentTintColor = NSColor.white.withAlphaComponent(0.3)
+        del.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Delete")
+        del.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .regular)
+        del.contentTintColor = NSColor.tertiaryLabelColor
         header.addSubview(del)
 
         // Text view
@@ -786,9 +932,9 @@ class SectionCellView: NSTableCellView {
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.isRichText = false
         textView.backgroundColor = .clear
-        textView.textColor = NSColor.white.withAlphaComponent(0.9)
+        textView.textColor = NSColor.labelColor
         textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        textView.insertionPointColor = .white
+        textView.insertionPointColor = NSColor.controlAccentColor
         textView.isEditable = true
         textView.isSelectable = true
         textView.isVerticallyResizable = true
@@ -796,15 +942,15 @@ class SectionCellView: NSTableCellView {
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                                                         height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainerInset = NSSize(width: 2, height: 2)
+        textView.textContainerInset = NSSize(width: 2, height: 4)
         textView.allowsUndo = true
         textView.installLayoutManagerDelegate()
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.selectedTextAttributes = [
-            .backgroundColor: NSColor.white.withAlphaComponent(0.2),
-            .foregroundColor: NSColor.white,
+            .backgroundColor: NSColor.controlAccentColor.withAlphaComponent(0.25),
+            .foregroundColor: NSColor.labelColor,
         ]
         textView.string = section.content
         textView.delegate = self
@@ -831,30 +977,40 @@ class SectionCellView: NSTableCellView {
             while range.location < str.length {
                 let found = str.range(of: query, options: .caseInsensitive, range: range)
                 guard found.location != NSNotFound else { break }
-                storage.addAttribute(.backgroundColor, value: NSColor.yellow.withAlphaComponent(0.4), range: found)
+                storage.addAttribute(.backgroundColor,
+                                     value: NSColor.systemYellow.withAlphaComponent(0.45), range: found)
                 range = NSRange(location: found.upperBound, length: str.length - found.upperBound)
             }
         }
 
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            header.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            header.leadingAnchor.constraint(equalTo: leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: trailingAnchor),
             header.heightAnchor.constraint(equalToConstant: SectionCellView.headerH),
 
             handle.centerXAnchor.constraint(equalTo: header.centerXAnchor),
             handle.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
-            del.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            del.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -10),
             del.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            del.widthAnchor.constraint(equalToConstant: 14),
+            del.heightAnchor.constraint(equalToConstant: 14),
 
-            copy.trailingAnchor.constraint(equalTo: del.leadingAnchor, constant: -6),
+            dup.trailingAnchor.constraint(equalTo: del.leadingAnchor, constant: -4),
+            dup.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            dup.widthAnchor.constraint(equalToConstant: 14),
+            dup.heightAnchor.constraint(equalToConstant: 14),
+
+            copy.trailingAnchor.constraint(equalTo: dup.leadingAnchor, constant: -4),
             copy.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            copy.widthAnchor.constraint(equalToConstant: 14),
+            copy.heightAnchor.constraint(equalToConstant: 14),
 
-            textView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 2),
+            textView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 0),
             textView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             textView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            textView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+            textView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
         ])
     }
 
@@ -862,7 +1018,11 @@ class SectionCellView: NSTableCellView {
 
     func setActive(_ active: Bool) {
         layer?.backgroundColor = NSColor.white
-            .withAlphaComponent(active ? 0.14 : 0.07).cgColor
+            .withAlphaComponent(active ? 0.18 : 0.06).cgColor
+        layer?.borderColor = active
+            ? NSColor.white.withAlphaComponent(0.22).cgColor
+            : NSColor.clear.cgColor
+        layer?.borderWidth = active ? 1 : 0
     }
 
     override func updateTrackingAreas() {
@@ -876,17 +1036,17 @@ class SectionCellView: NSTableCellView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        guard layer?.borderWidth == 0 else { return } // skip if selected
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.11).cgColor
+        guard layer?.borderWidth == 0 else { return }
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.09).cgColor
     }
 
     override func mouseExited(with event: NSEvent) {
         guard layer?.borderWidth == 0 else { return }
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.07).cgColor
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
     }
 
     func setSelected(_ selected: Bool) {
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.5).cgColor
+        layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.6).cgColor
         layer?.borderWidth = selected ? 1.5 : 0
     }
 
@@ -895,6 +1055,7 @@ class SectionCellView: NSTableCellView {
         NSPasteboard.general.setString(textView.string, forType: .string)
     }
 
+    @objc func duplicateSelf() { ctrl?.duplicate(id: sectionId) }
     @objc func deleteSelf() { ctrl?.delete(id: sectionId) }
 }
 
@@ -948,19 +1109,26 @@ extension SectionCellView: NSTextViewDelegate {
 
 // MARK: - Chrome-style Bucket Tab
 
-class BucketTabView: NSView, NSTextFieldDelegate {
+class BucketTabView: NSView, NSTextViewDelegate {
     let bucketId: String
     var name: String {
-        didSet { if !nameField.isEditable { nameField.stringValue = name }
-                 invalidateIntrinsicContentSize() }
+        didSet {
+            label.stringValue = name
+            if editView.string != name { editView.string = name }
+            invalidateIntrinsicContentSize()
+        }
     }
     var isActive: Bool = false { didSet { updateStyling() } }
 
     var onClick: (() -> Void)?
     var onRename: ((String) -> Void)?
     var onRequestDelete: (() -> Void)?
+    var onDidEndEditing: (() -> Void)?
 
-    private let nameField = NSTextField()
+    private let label = NSTextField(labelWithString: "")
+    private let editView = NSTextView()            // NSTextView handles its own key events
+    private var editContainer: NSScrollView!
+    private let closeButton = NSButton()
     private var trackingArea: NSTrackingArea?
     private var isHovered = false
 
@@ -969,34 +1137,76 @@ class BucketTabView: NSView, NSTextFieldDelegate {
         self.name = name
         super.init(frame: .zero)
         wantsLayer = true
+        layer?.cornerRadius = 5
         layer?.masksToBounds = true
 
-        nameField.translatesAutoresizingMaskIntoConstraints = false
-        nameField.stringValue = name
-        nameField.isEditable = false
-        nameField.isSelectable = false
-        nameField.isBordered = false
-        nameField.drawsBackground = false
-        nameField.backgroundColor = .clear
-        nameField.focusRingType = .none
-        nameField.font = NSFont.systemFont(ofSize: 12)
-        nameField.textColor = NSColor.white.withAlphaComponent(0.65)
-        nameField.lineBreakMode = .byTruncatingTail
-        nameField.delegate = self
-        nameField.cell?.usesSingleLineMode = true
-        addSubview(nameField)
-        NSLayoutConstraint.activate([
-            nameField.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 1),
-            nameField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            nameField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-        ])
+        // Label (shown when not editing)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.stringValue = name
+        label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        label.textColor = NSColor.white.withAlphaComponent(0.55)
+        label.lineBreakMode = .byTruncatingTail
+        label.isSelectable = false
+        addSubview(label)
 
-        // Right-click menu for delete only
-        let menu = NSMenu()
-        let del = NSMenuItem(title: "Delete", action: #selector(requestDelete), keyEquivalent: "")
-        del.target = self
-        menu.addItem(del)
-        self.menu = menu
+        // Edit view — NSTextView so it handles its own key events (no shared field editor)
+        editView.string = name
+        editView.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        editView.textColor = .white
+        editView.backgroundColor = .clear
+        editView.drawsBackground = false
+        editView.isEditable = true
+        editView.isSelectable = true
+        editView.isRichText = false
+        editView.allowsUndo = false
+        editView.focusRingType = .none
+        editView.textContainerInset = NSSize(width: 2, height: 2)
+        editView.textContainer?.lineFragmentPadding = 0
+        editView.delegate = self
+
+        // Wrap in a scroll view so Auto Layout can constrain it
+        editContainer = NSScrollView()
+        editContainer.translatesAutoresizingMaskIntoConstraints = false
+        editContainer.documentView = editView
+        editContainer.hasVerticalScroller = false
+        editContainer.hasHorizontalScroller = false
+        editContainer.borderType = .noBorder
+        editContainer.backgroundColor = .clear
+        editContainer.drawsBackground = false
+        editContainer.isHidden = true
+        addSubview(editContainer)
+
+        // Close button — small circle with × , visible on hover/active
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.title = ""
+        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")
+        closeButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 7, weight: .semibold)
+        closeButton.isBordered = false
+        closeButton.bezelStyle = .inline
+        closeButton.contentTintColor = NSColor.white.withAlphaComponent(0.8)
+        closeButton.wantsLayer = true
+        closeButton.layer?.cornerRadius = 7
+        closeButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.15).cgColor
+        closeButton.target = self
+        closeButton.action = #selector(requestDelete)
+        closeButton.alphaValue = 0
+        addSubview(closeButton)
+
+        NSLayoutConstraint.activate([
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4),
+
+            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
+            closeButton.widthAnchor.constraint(equalToConstant: 14),
+            closeButton.heightAnchor.constraint(equalToConstant: 14),
+
+            editContainer.centerYAnchor.constraint(equalTo: centerYAnchor),
+            editContainer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            editContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            editContainer.heightAnchor.constraint(equalToConstant: 20),
+        ])
 
         updateStyling()
     }
@@ -1004,7 +1214,7 @@ class BucketTabView: NSView, NSTextFieldDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: nameField.intrinsicContentSize.width + 24, height: 26)
+        NSSize(width: label.intrinsicContentSize.width + 42, height: 28)
     }
 
     // Prevent the window-background-drag from swallowing clicks on the tab
@@ -1035,8 +1245,8 @@ class BucketTabView: NSView, NSTextFieldDelegate {
     // MARK: Click / double-click
 
     override func mouseDown(with event: NSEvent) {
-        // If we're already editing, let the text field handle the click normally
-        if nameField.isEditable { super.mouseDown(with: event); return }
+        // If we're already editing, pass through so NSTextView handles the click
+        if !editContainer.isHidden { super.mouseDown(with: event); return }
         if event.clickCount >= 2 {
             beginEditing()
         } else {
@@ -1044,86 +1254,58 @@ class BucketTabView: NSView, NSTextFieldDelegate {
         }
     }
 
-    // MARK: Drawing — Chrome-style rounded top corners
-
-    override func draw(_ dirtyRect: NSRect) {
-        let r = bounds
-        let radius: CGFloat = 8
-        let path = NSBezierPath()
-        // Start bottom-left, go up, arc top-left, across, arc top-right, down
-        path.move(to: NSPoint(x: 0, y: 0))
-        path.line(to: NSPoint(x: 0, y: r.height - radius))
-        path.curve(to: NSPoint(x: radius, y: r.height),
-                   controlPoint1: NSPoint(x: 0, y: r.height - radius / 2),
-                   controlPoint2: NSPoint(x: radius / 2, y: r.height))
-        path.line(to: NSPoint(x: r.width - radius, y: r.height))
-        path.curve(to: NSPoint(x: r.width, y: r.height - radius),
-                   controlPoint1: NSPoint(x: r.width - radius / 2, y: r.height),
-                   controlPoint2: NSPoint(x: r.width, y: r.height - radius / 2))
-        path.line(to: NSPoint(x: r.width, y: 0))
-        path.close()
-
-        let bg: NSColor
-        if isActive {
-            bg = NSColor.white.withAlphaComponent(0.20)
-        } else if isHovered {
-            bg = NSColor.white.withAlphaComponent(0.10)
-        } else {
-            bg = NSColor.white.withAlphaComponent(0.04)
-        }
-        bg.setFill()
-        path.fill()
-
-        if isActive {
-            NSColor.white.withAlphaComponent(0.25).setStroke()
-            path.lineWidth = 0.5
-            path.stroke()
-        }
-    }
+    // MARK: Styling — layer-based, no custom drawing
 
     private func updateStyling() {
-        if !nameField.isEditable {
-            nameField.textColor = isActive
-                ? NSColor.white.withAlphaComponent(0.95)
-                : NSColor.white.withAlphaComponent(0.6)
-            nameField.font = NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
+        let alpha: CGFloat
+        if isActive {
+            alpha = 0.18
+            label.textColor = .white
+            label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        } else if isHovered {
+            alpha = 0.09
+            label.textColor = NSColor.white.withAlphaComponent(0.75)
+            label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        } else {
+            alpha = 0
+            label.textColor = NSColor.white.withAlphaComponent(0.55)
+            label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         }
-        needsDisplay = true
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(alpha).cgColor
+        closeButton.alphaValue = (isHovered || isActive) ? 1.0 : 0.0
     }
 
     // MARK: Inline rename
 
     func beginEditing() {
-        guard !nameField.isEditable else { return }
-        nameField.isEditable = true
-        nameField.isSelectable = true
-        nameField.drawsBackground = true
-        nameField.backgroundColor = NSColor.black.withAlphaComponent(0.45)
-        nameField.textColor = NSColor.white
-        // Defer focus so it wins any pending focusLastSection the click scheduled
+        guard editContainer.isHidden else { return }
+        editView.string = name
+        editContainer.isHidden = false
+        label.isHidden = true
+        // Defer focus so it wins any pending focusLastSection scheduled by the click
         DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.nameField.isEditable else { return }
-            self.window?.makeFirstResponder(self.nameField)
-            self.nameField.selectText(nil)
+            guard let self = self, !self.editContainer.isHidden else { return }
+            self.window?.makeFirstResponder(self.editView)
+            self.editView.selectAll(nil)
         }
     }
 
     private func commitEditing(cancel: Bool) {
-        guard nameField.isEditable else { return }
-        let newName = nameField.stringValue.trimmingCharacters(in: .whitespaces)
-        nameField.isEditable = false
-        nameField.isSelectable = false
-        nameField.drawsBackground = false
-        nameField.backgroundColor = .clear
+        guard !editContainer.isHidden else { return }
+        let newName = editView.string.trimmingCharacters(in: .whitespaces)
+        editContainer.isHidden = true
+        label.isHidden = false
         if cancel || newName.isEmpty {
-            nameField.stringValue = name
+            editView.string = name
         } else if newName != name {
             onRename?(newName)
         }
         updateStyling()
+        DispatchQueue.main.async { self.onDidEndEditing?() }
     }
 
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+    // NSTextViewDelegate — handle Enter and Escape
+    func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         if selector == #selector(NSResponder.insertNewline(_:)) {
             commitEditing(cancel: false)
             return true
@@ -1135,7 +1317,7 @@ class BucketTabView: NSView, NSTextFieldDelegate {
         return false
     }
 
-    func controlTextDidEndEditing(_ obj: Notification) {
+    func textDidEndEditing(_ notification: Notification) {
         commitEditing(cancel: false)
     }
 
