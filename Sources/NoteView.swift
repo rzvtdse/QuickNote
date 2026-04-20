@@ -277,6 +277,7 @@ class SectionsController: NSObject {
     private var eventMonitor: Any?
     private var keyMonitor: Any?
     private var lastKnownTableWidth: CGFloat = 0
+    private weak var focusedTextView: SectionTextView?
 
     private static let pbType = NSPasteboard.PasteboardType("com.quicknote.section")
 
@@ -437,9 +438,7 @@ class SectionsController: NSObject {
             }
             // Cmd+Shift+X — toggle strikethrough on selected text
             if flags == [.command, .shift], ch == "x" {
-                if let tv = event.window?.firstResponder as? SectionTextView {
-                    tv.toggleStrikethrough()
-                }
+                self.focusedTextView?.toggleStrikethrough()
                 return nil
             }
             // Option+Shift+T — restore last deleted section
@@ -573,6 +572,8 @@ class SectionsController: NSObject {
         rememberLastSection(id)
         save()
     }
+
+    func trackFocus(_ tv: SectionTextView?) { focusedTextView = tv }
 
     /// Record focus so that this bucket resumes on this section next time it's activated.
     func rememberLastSection(_ id: String) {
@@ -1024,9 +1025,13 @@ class SectionCellView: NSTableCellView {
         textView.onFocus = { [weak self] in
             guard let self = self else { return }
             self.ctrl?.rememberLastSection(self.sectionId)
+            self.ctrl?.trackFocus(self.textView)
             self.setActive(true)
         }
-        textView.onBlur = { [weak self] in self?.setActive(false) }
+        textView.onBlur = { [weak self] in
+            self?.ctrl?.trackFocus(nil)
+            self?.setActive(false)
+        }
         textView.onProgrammaticChange = { [weak self] in
             guard let self = self else { return }
             self.ctrl?.update(id: self.sectionId, content: self.textView.string)
