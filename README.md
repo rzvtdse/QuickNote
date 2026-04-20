@@ -35,7 +35,7 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 | Show / hide | `Cmd+Shift+Space` or click the **N** menu bar icon |
 | New section | `Cmd+Shift+N` or type ` ``` ` anywhere in a section |
 | Switch bucket | Click a tab at the top |
-| New bucket | Click `+` in the tab bar |
+| New bucket | `Cmd+N` or click `+` in the tab bar |
 | Rename bucket | Double-click its tab |
 | Close bucket | Click `×` on its tab |
 | Restore closed bucket | `Cmd+Shift+T` |
