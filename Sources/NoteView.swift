@@ -216,6 +216,23 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
         let raw = characterIndexForInsertion(at: pt)
         let candidates = [raw, raw > 0 ? raw - 1 : raw].map { min($0, storage.length - 1) }
 
+        // Single click on a checkbox character → toggle it
+        if event.clickCount == 1, !event.modifierFlags.contains(.option) {
+            for idx in candidates {
+                guard idx < storage.length else { continue }
+                let charRange = NSRange(location: idx, length: 1)
+                let ch = (storage.string as NSString).substring(with: charRange)
+                if ch == "☐" || ch == "☑" {
+                    let replacement = ch == "☐" ? "☑" : "☐"
+                    if shouldChangeText(in: charRange, replacementString: replacement) {
+                        textStorage?.replaceCharacters(in: charRange, with: replacement)
+                        didChangeText()
+                    }
+                    return
+                }
+            }
+        }
+
         // Option+click → open URL
         if event.modifierFlags.contains(.option) {
             for idx in candidates {
@@ -951,6 +968,7 @@ class SectionCellView: NSTableCellView {
     private var textView: SectionTextView!
     private var sectionId = ""
     private weak var ctrl: SectionsController?
+    private var isInListMode = false
 
     static let headerH: CGFloat = 22
     static let minH: CGFloat = 72
@@ -1056,6 +1074,10 @@ class SectionCellView: NSTableCellView {
             .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
             .foregroundColor: NSColor.labelColor,
         ]
+        // Restore list mode if the content already contains checklist items
+        isInListMode = section.content
+            .components(separatedBy: "\n")
+            .contains { $0.hasPrefix("☐") || $0.hasPrefix("☑") }
         textView.delegate = self
         textView.onFocus = { [weak self] in
             guard let self = self else { return }
@@ -1189,6 +1211,37 @@ extension SectionCellView: NSTextViewDelegate {
             ctrl?.focusSection(offset: -1, from: sectionId)
             return true
         }
+
+        // List mode: Enter → new unchecked item
+        if selector == #selector(NSResponder.insertNewline(_:)), isInListMode {
+            textView.insertText("\n☐ ", replacementRange: textView.selectedRange())
+            return true
+        }
+
+        // List mode: Backspace on an empty list item → remove the checkbox prefix
+        if selector == #selector(NSResponder.deleteBackward(_:)), isInListMode {
+            let sel = textView.selectedRange()
+            if sel.length == 0, sel.location >= 2 {
+                let str = textView.string as NSString
+                let preceding = str.substring(with: NSRange(location: sel.location - 2, length: 2))
+                if preceding == "☐ " || preceding == "☑ " {
+                    // Only remove if this checkbox is alone on its line
+                    let atLineStart = sel.location == 2
+                        || str.character(at: sel.location - 3) == 10  // '\n'
+                    let atLineEnd   = sel.location == str.length
+                        || str.character(at: sel.location) == 10
+                    if atLineStart && atLineEnd {
+                        let delRange = NSRange(location: sel.location - 2, length: 2)
+                        if textView.shouldChangeText(in: delRange, replacementString: "") {
+                            textView.textStorage?.replaceCharacters(in: delRange, with: "")
+                            textView.didChangeText()
+                        }
+                        return true
+                    }
+                }
+            }
+        }
+
         return false
     }
 
@@ -1217,24 +1270,66 @@ extension SectionCellView: NSTextViewDelegate {
                   replacementString string: String?) -> Bool {
         guard let s = string else { return true }
         let proposed = (textView.string as NSString).replacingCharacters(in: range, with: s)
-
-        // Cursor position after insertion
         let cursorPos = range.location + s.count
-        guard cursorPos >= 3 else { return true }
-
         let nsProposed = proposed as NSString
-        let triggerRange = NSRange(location: cursorPos - 3, length: 3)
-        guard nsProposed.substring(with: triggerRange) == "```" else { return true }
 
-        let before = nsProposed.substring(to: triggerRange.location)
-        let after  = nsProposed.substring(from: cursorPos)
-
-        DispatchQueue.main.async {
-            textView.string = before
-            self.ctrl?.update(id: self.sectionId, content: before)
-            self.ctrl?.split(id: self.sectionId, before: before, after: after)
+        // ``` → split into a new section
+        if cursorPos >= 3 {
+            let tr = NSRange(location: cursorPos - 3, length: 3)
+            if nsProposed.substring(with: tr) == "```" {
+                let before = nsProposed.substring(to: tr.location)
+                let after  = nsProposed.substring(from: cursorPos)
+                DispatchQueue.main.async {
+                    textView.string = before
+                    self.ctrl?.update(id: self.sectionId, content: before)
+                    self.ctrl?.split(id: self.sectionId, before: before, after: after)
+                }
+                return false
+            }
         }
-        return false
+
+        // /list → start checklist
+        if cursorPos >= 5 {
+            let tr = NSRange(location: cursorPos - 5, length: 5)
+            if nsProposed.substring(with: tr) == "/list" {
+                let before = nsProposed.substring(to: tr.location)
+                DispatchQueue.main.async {
+                    let newText = before + "☐ "
+                    textView.string = newText
+                    textView.typingAttributes = [
+                        .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                        .foregroundColor: NSColor.labelColor,
+                    ]
+                    textView.setSelectedRange(NSRange(location: (newText as NSString).length, length: 0))
+                    self.isInListMode = true
+                    self.ctrl?.update(id: self.sectionId, content: newText)
+                    self.ctrl?.refreshRowHeight(for: self)
+                }
+                return false
+            }
+        }
+
+        // \list → end checklist
+        if cursorPos >= 5 {
+            let tr = NSRange(location: cursorPos - 5, length: 5)
+            if nsProposed.substring(with: tr) == "\\list" {
+                let before = nsProposed.substring(to: tr.location)
+                DispatchQueue.main.async {
+                    textView.string = before
+                    textView.typingAttributes = [
+                        .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                        .foregroundColor: NSColor.labelColor,
+                    ]
+                    textView.setSelectedRange(NSRange(location: (before as NSString).length, length: 0))
+                    self.isInListMode = false
+                    self.ctrl?.update(id: self.sectionId, content: before)
+                    self.ctrl?.refreshRowHeight(for: self)
+                }
+                return false
+            }
+        }
+
+        return true
     }
 }
 
