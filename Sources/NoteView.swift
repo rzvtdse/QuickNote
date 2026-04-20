@@ -24,7 +24,7 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
         let symbolName = checked ? "checkmark.circle.fill" : "circle"
         let baseConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
         let colorConfig = NSImage.SymbolConfiguration(
-            hierarchicalColor: checked ? NSColor.controlAccentColor : NSColor.tertiaryLabelColor)
+            hierarchicalColor: checked ? NSColor.white : NSColor.white.withAlphaComponent(0.4))
         attachment.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
             .withSymbolConfiguration(baseConfig.applying(colorConfig))
         // y offset nudges the icon to sit on the text baseline nicely
