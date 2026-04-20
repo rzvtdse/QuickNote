@@ -854,10 +854,15 @@ class SectionsController: NSObject {
     func refreshRowHeight(for view: NSView) {
         let row = tableView.row(for: view)
         guard row >= 0 else { return }
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0
-            self.tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
-        }
+        tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
+    }
+
+    /// Preferred variant: looks up the row directly from the data model so it
+    /// never fails even if the cell view is not yet fully embedded in the table
+    /// hierarchy (e.g. during the first configure pass).
+    func refreshRowHeightForSection(id: String) {
+        guard let row = filteredSections.firstIndex(where: { $0.id == id }) else { return }
+        tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
     }
 
     // MARK: Buckets
@@ -1263,7 +1268,7 @@ class SectionCellView: NSTableCellView {
         textView.onProgrammaticChange = { [weak self] in
             guard let self = self else { return }
             self.ctrl?.update(id: self.sectionId, content: self.textView.string)
-            self.ctrl?.refreshRowHeight(for: self)
+            self.ctrl?.refreshRowHeightForSection(id: self.sectionId)
         }
         // Persist after a direct storage change (e.g. strikethrough toggle, checkbox click)
         textView.onTextStorageChanged = { [weak self] in
@@ -1503,8 +1508,7 @@ extension SectionCellView: NSTextViewDelegate {
         ctrl?.update(id: sectionId,
                      content: textView.plainTextForStorage(),
                      rtfData: textView.rtfDataForStorage())
-        ctrl?.refreshRowHeight(for: self)
-        ctrl?.refreshRowHeight(for: self)
+        ctrl?.refreshRowHeightForSection(id: sectionId)
     }
 
     func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange,
