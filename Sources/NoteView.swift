@@ -13,9 +13,27 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
     var isInListMode = false
 
     private var isProcessingLinks = false
-    fileprivate static let linkKey    = NSAttributedString.Key("QNLink")
-    fileprivate static let toggleKey  = NSAttributedString.Key("QNToggle")
-    fileprivate static let hiddenKey  = NSAttributedString.Key("QNHidden")
+    fileprivate static let linkKey     = NSAttributedString.Key("QNLink")
+    fileprivate static let toggleKey   = NSAttributedString.Key("QNToggle")
+    fileprivate static let hiddenKey   = NSAttributedString.Key("QNHidden")
+    fileprivate static let checkboxKey = NSAttributedString.Key("QNCheckbox")
+
+    /// Builds an NSAttributedString containing a single SF-Symbol checkbox attachment.
+    static func checkboxAttrStr(checked: Bool) -> NSAttributedString {
+        let attachment = NSTextAttachment()
+        let symbolName = checked ? "checkmark.circle.fill" : "circle"
+        let baseConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        let colorConfig = NSImage.SymbolConfiguration(
+            hierarchicalColor: checked ? NSColor.controlAccentColor : NSColor.tertiaryLabelColor)
+        attachment.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
+            .withSymbolConfiguration(baseConfig.applying(colorConfig))
+        // y offset nudges the icon to sit on the text baseline nicely
+        attachment.bounds = CGRect(x: 0, y: -2.5, width: 14, height: 14)
+        let str = NSMutableAttributedString(attachment: attachment)
+        str.addAttribute(checkboxKey, value: checked ? "checked" : "unchecked",
+                         range: NSRange(location: 0, length: 1))
+        return str
+    }
 
     func installLayoutManagerDelegate() {
         layoutManager?.delegate = self
@@ -61,15 +79,16 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
         didChangeText()
     }
 
-    // Strip everything except strikethrough (and internal link markers) from
-    // the full storage, then re-apply the base font and colour.
+    // Strip everything except strikethrough, link markers, and checkbox attachments
+    // from the full storage, then re-apply the base font and colour to non-attachment runs.
     func stripFormattingExceptStrikethrough() {
         guard let storage = textStorage, storage.length > 0 else { return }
         let fullRange = NSRange(location: 0, length: storage.length)
         let keep: Set<NSAttributedString.Key> = [
             .strikethroughStyle,
+            .attachment, SectionTextView.checkboxKey,          // checkbox SF-Symbol icons
             SectionTextView.linkKey, SectionTextView.toggleKey, SectionTextView.hiddenKey,
-            .underlineStyle, .foregroundColor,   // re-set below; retained for links
+            .underlineStyle, .foregroundColor,                 // re-set below; retained for links
         ]
         storage.beginEditing()
         storage.enumerateAttributes(in: fullRange, options: []) { attrs, subRange, _ in
@@ -77,11 +96,14 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
                 storage.removeAttribute(key, range: subRange)
             }
         }
-        // Enforce base font and colour everywhere
-        storage.addAttribute(.font,
-                             value: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
-                             range: fullRange)
-        storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: fullRange)
+        // Enforce base font and colour on plain-text runs only (skip attachment characters)
+        storage.enumerateAttribute(.attachment, in: fullRange, options: []) { val, range, _ in
+            guard val == nil else { return }    // skip attachment chars
+            storage.addAttribute(.font,
+                                 value: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                                 range: range)
+            storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range)
+        }
         storage.endEditing()
     }
 
@@ -89,11 +111,18 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
 
     func activateListMode() {
         guard !isInListMode else { return }
+        guard let storage = textStorage else { return }
         let range = selectedRange()
-        let insertion = "☐ "
-        if shouldChangeText(in: range, replacementString: insertion) {
-            textStorage?.replaceCharacters(in: range, with: insertion)
-            setSelectedRange(NSRange(location: range.location + (insertion as NSString).length, length: 0))
+        let insertion = NSMutableAttributedString(
+            attributedString: SectionTextView.checkboxAttrStr(checked: false))
+        insertion.append(NSAttributedString(string: " ", attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+            .foregroundColor: NSColor.labelColor,
+        ]))
+        if shouldChangeText(in: range, replacementString: insertion.string) {
+            storage.replaceCharacters(in: range, with: insertion)
+            setSelectedRange(NSRange(location: range.location + (insertion.string as NSString).length,
+                                     length: 0))
             didChangeText()
         }
         isInListMode = true
@@ -232,18 +261,19 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
         let raw = characterIndexForInsertion(at: pt)
         let candidates = [raw, raw > 0 ? raw - 1 : raw].map { min($0, storage.length - 1) }
 
-        // Single click on a checkbox character → toggle it
+        // Single click on a checkbox attachment → toggle checked state
         if event.clickCount == 1, !event.modifierFlags.contains(.option) {
             for idx in candidates {
                 guard idx < storage.length else { continue }
-                let charRange = NSRange(location: idx, length: 1)
-                let ch = (storage.string as NSString).substring(with: charRange)
-                if ch == "☐" || ch == "☑" {
-                    let replacement = ch == "☐" ? "☑" : "☐"
-                    if shouldChangeText(in: charRange, replacementString: replacement) {
-                        textStorage?.replaceCharacters(in: charRange, with: replacement)
-                        didChangeText()
-                    }
+                if let state = storage.attribute(SectionTextView.checkboxKey,
+                                                  at: idx, effectiveRange: nil) as? String {
+                    let nowChecked = (state != "checked")
+                    let newAttachment = SectionTextView.checkboxAttrStr(checked: nowChecked)
+                    storage.beginEditing()
+                    storage.replaceCharacters(in: NSRange(location: idx, length: 1),
+                                              with: newAttachment)
+                    storage.endEditing()
+                    onTextStorageChanged?()
                     return
                 }
             }
@@ -1094,10 +1124,11 @@ class SectionCellView: NSTableCellView {
             .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
             .foregroundColor: NSColor.labelColor,
         ]
-        // Restore list mode if the content already contains checklist items
+        // Restore list mode: attachment checkboxes show as U+FFFC in the plain string;
+        // also handle legacy ☐/☑ text checkboxes from older saves.
         textView.isInListMode = section.content
             .components(separatedBy: "\n")
-            .contains { $0.hasPrefix("☐") || $0.hasPrefix("☑") }
+            .contains { $0.hasPrefix("\u{FFFC}") || $0.hasPrefix("☐") || $0.hasPrefix("☑") }
         textView.delegate = self
         textView.onFocus = { [weak self] in
             guard let self = self else { return }
@@ -1239,45 +1270,69 @@ extension SectionCellView: NSTextViewDelegate {
             let str = textView.string as NSString
 
             if stv?.isInListMode == true {
-                // Empty list item + Enter → exit list mode (remove the checkbox, normal newline)
+                // Empty list item + Enter → exit list mode
+                // An empty item = cursor is right after "[attachment] " with nothing else on the line.
                 if sel.length == 0, sel.location >= 2 {
-                    let preceding = str.substring(with: NSRange(location: sel.location - 2, length: 2))
-                    if preceding == "☐ " || preceding == "☑ " {
+                    let c1 = str.character(at: sel.location - 2)   // attachment char = 0xFFFC
+                    let c2 = str.character(at: sel.location - 1)   // space = 0x20
+                    let isEmptyCheckbox = c1 == 0xFFFC && c2 == 0x20
+                        && textView.textStorage?.attribute(SectionTextView.checkboxKey,
+                                                           at: sel.location - 2,
+                                                           effectiveRange: nil) != nil
+                    if isEmptyCheckbox {
                         let atLineStart = sel.location == 2
                             || str.character(at: sel.location - 3) == 10
                         let atLineEnd = sel.location == str.length
                             || str.character(at: sel.location) == 10
                         if atLineStart && atLineEnd {
-                            // Remove the empty checkbox and fall back to a plain newline
                             let delRange = NSRange(location: sel.location - 2, length: 2)
                             if textView.shouldChangeText(in: delRange, replacementString: "") {
                                 textView.textStorage?.replaceCharacters(in: delRange, with: "")
                                 textView.didChangeText()
                             }
                             stv?.isInListMode = false
-                            return true   // swallow — no newline inserted
+                            return true
                         }
                     }
                 }
-                // Non-empty list item → add new unchecked item
-                textView.insertText("\n☐ ", replacementRange: sel)
+                // Non-empty list item → new unchecked item
+                let newItem = NSMutableAttributedString(string: "\n")
+                newItem.append(SectionTextView.checkboxAttrStr(checked: false))
+                newItem.append(NSAttributedString(string: " ", attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                    .foregroundColor: NSColor.labelColor,
+                ]))
+                let plainNew = newItem.string
+                if textView.shouldChangeText(in: sel, replacementString: plainNew) {
+                    textView.textStorage?.replaceCharacters(in: sel, with: newItem)
+                    textView.setSelectedRange(
+                        NSRange(location: sel.location + (plainNew as NSString).length, length: 0))
+                    textView.didChangeText()
+                }
                 return true
             }
 
             // Not in list mode: check if the current line ends with /list
-            // Find the start of the current line
             var lineStart = sel.location
             while lineStart > 0 && str.character(at: lineStart - 1) != 10 { lineStart -= 1 }
-            let lineText = str.substring(with: NSRange(location: lineStart, length: sel.location - lineStart))
+            let lineText = str.substring(with: NSRange(location: lineStart,
+                                                        length: sel.location - lineStart))
             if lineText.hasSuffix("/list") {
-                // Replace "/list" with "\n☐ " and activate list mode
+                // Replace "/list" with newline + checkbox attachment + space
                 let triggerStart = lineStart + (lineText as NSString).length - 5
+                let replacement = NSMutableAttributedString(string: "\n")
+                replacement.append(SectionTextView.checkboxAttrStr(checked: false))
+                replacement.append(NSAttributedString(string: " ", attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                    .foregroundColor: NSColor.labelColor,
+                ]))
+                let plainReplacement = replacement.string
                 let replaceRange = NSRange(location: triggerStart, length: 5)
-                let newText = "\n☐ "
-                if textView.shouldChangeText(in: replaceRange, replacementString: newText) {
-                    textView.textStorage?.replaceCharacters(in: replaceRange, with: newText)
+                if textView.shouldChangeText(in: replaceRange, replacementString: plainReplacement) {
+                    textView.textStorage?.replaceCharacters(in: replaceRange, with: replacement)
                     textView.setSelectedRange(
-                        NSRange(location: triggerStart + (newText as NSString).length, length: 0))
+                        NSRange(location: triggerStart + (plainReplacement as NSString).length,
+                                length: 0))
                     textView.didChangeText()
                 }
                 stv?.isInListMode = true
@@ -1285,13 +1340,18 @@ extension SectionCellView: NSTextViewDelegate {
             }
         }
 
-        // Backspace on an empty list item (☐  or ☑  alone on its line) → remove prefix
+        // Backspace on an empty list item alone on its line → remove the checkbox
         if selector == #selector(NSResponder.deleteBackward(_:)), stv?.isInListMode == true {
             let sel = textView.selectedRange()
             if sel.length == 0, sel.location >= 2 {
                 let str = textView.string as NSString
-                let preceding = str.substring(with: NSRange(location: sel.location - 2, length: 2))
-                if preceding == "☐ " || preceding == "☑ " {
+                let c1 = str.character(at: sel.location - 2)
+                let c2 = str.character(at: sel.location - 1)
+                let isEmptyCheckbox = c1 == 0xFFFC && c2 == 0x20
+                    && textView.textStorage?.attribute(SectionTextView.checkboxKey,
+                                                       at: sel.location - 2,
+                                                       effectiveRange: nil) != nil
+                if isEmptyCheckbox {
                     let atLineStart = sel.location == 2
                         || str.character(at: sel.location - 3) == 10
                     let atLineEnd = sel.location == str.length
