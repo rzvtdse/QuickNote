@@ -108,6 +108,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         fx.state = .active
         contentView.addSubview(fx)
 
+        // Dark overlay to reduce transparency
+        let overlay = NSView(frame: contentView.bounds)
+        overlay.autoresizingMask = [.width, .height]
+        overlay.wantsLayer = true
+        overlay.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
+        fx.addSubview(overlay)
+
         sectionsController = SectionsController()
         sectionsController.build(in: fx)
     }
