@@ -572,6 +572,10 @@ class SectionsController: NSObject {
     }
 
     private func switchToBucket(_ id: String) {
+        if id == activeBucketId {
+            DispatchQueue.main.async { self.focusLastSection() }
+            return
+        }
         activeBucketId = id
         UserDefaults.standard.set(id, forKey: "qn_active_bucket")
         selectedIds.removeAll()
@@ -580,10 +584,15 @@ class SectionsController: NSObject {
             sections.append(NoteSection(bucketId: id))
             save()
         }
-        rebuildBucketBar()
+        // Update active state on existing tabs in place (don't destroy them
+        // mid-click, otherwise double-click-to-rename never sees clickCount == 2)
+        for v in bucketBar.arrangedSubviews {
+            if let tab = v as? BucketTabView {
+                tab.isActive = (tab.bucketId == id)
+            }
+        }
         tableView.reloadData()
         updateSelectionUI()
-        // Focus the last-edited section in this bucket so user can resume typing
         DispatchQueue.main.async { self.focusLastSection() }
     }
 
