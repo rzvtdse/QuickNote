@@ -469,8 +469,16 @@ class SectionsController: NSObject {
     func update(id: String, content: String) {
         guard let idx = sections.firstIndex(where: { $0.id == id }) else { return }
         sections[idx].content = content
-        UserDefaults.standard.set(id, forKey: "qn_last_section")
+        rememberLastSection(id)
         save()
+    }
+
+    /// Record focus so that this bucket resumes on this section next time it's activated.
+    func rememberLastSection(_ id: String) {
+        UserDefaults.standard.set(id, forKey: "qn_last_section")
+        if let section = sections.first(where: { $0.id == id }), let bid = section.bucketId {
+            UserDefaults.standard.set(id, forKey: "qn_last_section_\(bid)")
+        }
     }
 
     func delete(id: String) {
@@ -575,6 +583,8 @@ class SectionsController: NSObject {
         rebuildBucketBar()
         tableView.reloadData()
         updateSelectionUI()
+        // Focus the last-edited section in this bucket so user can resume typing
+        DispatchQueue.main.async { self.focusLastSection() }
     }
 
     @objc private func addBucket() {
@@ -609,7 +619,9 @@ class SectionsController: NSObject {
     }
 
     func focusLastSection() {
-        let lastId = UserDefaults.standard.string(forKey: "qn_last_section")
+        let perBucketKey = "qn_last_section_\(activeBucketId)"
+        let lastId = UserDefaults.standard.string(forKey: perBucketKey)
+            ?? UserDefaults.standard.string(forKey: "qn_last_section")
         let target = lastId.flatMap { id in filteredSections.firstIndex(where: { $0.id == id }) }
         let row = target ?? filteredSections.count - 1
         guard row >= 0 else { return }
@@ -787,7 +799,7 @@ class SectionCellView: NSTableCellView {
         textView.delegate = self
         textView.onFocus = { [weak self] in
             guard let self = self else { return }
-            UserDefaults.standard.set(self.sectionId, forKey: "qn_last_section")
+            self.ctrl?.rememberLastSection(self.sectionId)
             self.setActive(true)
         }
         textView.onBlur = { [weak self] in self?.setActive(false) }
