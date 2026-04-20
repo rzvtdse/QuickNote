@@ -1504,6 +1504,7 @@ extension SectionCellView: NSTextViewDelegate {
                      content: textView.plainTextForStorage(),
                      rtfData: textView.rtfDataForStorage())
         ctrl?.refreshRowHeight(for: self)
+        ctrl?.refreshRowHeight(for: self)
     }
 
     func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange,
