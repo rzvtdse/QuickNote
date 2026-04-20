@@ -862,7 +862,10 @@ class SectionsController: NSObject {
     /// hierarchy (e.g. during the first configure pass).
     func refreshRowHeightForSection(id: String) {
         guard let row = filteredSections.firstIndex(where: { $0.id == id }) else { return }
-        tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0
+            self.tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
+        }
     }
 
     // MARK: Buckets
