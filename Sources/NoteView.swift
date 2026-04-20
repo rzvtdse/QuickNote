@@ -128,47 +128,6 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
         isInListMode = true
     }
 
-    /// Returns the section content as plain text, replacing checkbox attachment chars
-    /// (U+FFFC) with ☐/☑ so the state survives RTF round-trips and app restarts.
-    func plainTextForStorage() -> String {
-        guard let storage = textStorage, storage.length > 0 else { return string }
-        let nsStr = storage.string as NSString
-        var result = ""
-        var lastEnd = 0
-        let fullRange = NSRange(location: 0, length: storage.length)
-        storage.enumerateAttribute(SectionTextView.checkboxKey, in: fullRange, options: []) { val, range, _ in
-            if range.location > lastEnd {
-                result += nsStr.substring(with: NSRange(location: lastEnd,
-                                                         length: range.location - lastEnd))
-            }
-            result += (val as? String) == "checked" ? "☑" : "☐"
-            lastEnd = range.upperBound
-        }
-        if lastEnd < storage.length {
-            result += nsStr.substring(with: NSRange(location: lastEnd,
-                                                     length: storage.length - lastEnd))
-        }
-        return result
-    }
-
-    /// Scans the text storage for ☐/☑ characters and replaces them with SF Symbol
-    /// checkbox attachments. Call this after loading content from plain text.
-    func convertTextCheckboxesToAttachments() {
-        guard let storage = textStorage, storage.length > 0 else { return }
-        // Iterate backward so replacing doesn't invalidate later indices
-        var i = storage.length - 1
-        while i >= 0 {
-            let ch = (storage.string as NSString).character(at: i)
-            if ch == 0x2610 || ch == 0x2611 {   // ☐ or ☑
-                let attrStr = SectionTextView.checkboxAttrStr(checked: ch == 0x2611)
-                storage.beginEditing()
-                storage.replaceCharacters(in: NSRange(location: i, length: 1), with: attrStr)
-                storage.endEditing()
-            }
-            i -= 1
-        }
-    }
-
     // MARK: - Strikethrough
 
     func toggleStrikethrough() {
@@ -1153,33 +1112,23 @@ class SectionCellView: NSTableCellView {
             .backgroundColor: NSColor.controlAccentColor.withAlphaComponent(0.25),
             .foregroundColor: NSColor.labelColor,
         ]
-        // Always load from plain content so checkboxes (stored as ☐/☑) are
-        // reliably present. Then overlay any strikethrough ranges from rtfData.
-        textView.string = section.content
+        // Load rich text if available, otherwise fall back to plain content
         if let rtf = section.rtfData,
-           let rtfAttr = NSAttributedString(rtf: rtf, documentAttributes: nil),
-           let storage = textView.textStorage {
-            let cap = min(rtfAttr.length, storage.length)
-            if cap > 0 {
-                rtfAttr.enumerateAttribute(.strikethroughStyle,
-                                           in: NSRange(location: 0, length: cap),
-                                           options: []) { val, range, _ in
-                    guard let val = val else { return }
-                    storage.addAttribute(.strikethroughStyle, value: val, range: range)
-                }
-            }
+           let attrStr = NSAttributedString(rtf: rtf, documentAttributes: nil) {
+            textView.textStorage?.setAttributedString(attrStr)
+        } else {
+            textView.string = section.content
         }
         // Ensure new typing uses the correct base font & colour
         textView.typingAttributes = [
             .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
             .foregroundColor: NSColor.labelColor,
         ]
-        // Restore list mode from the saved plain-text markers
+        // Restore list mode: attachment checkboxes show as U+FFFC in the plain string;
+        // also handle legacy ☐/☑ text checkboxes from older saves.
         textView.isInListMode = section.content
             .components(separatedBy: "\n")
-            .contains { $0.hasPrefix("☐") || $0.hasPrefix("☑") }
-        // Convert ☐/☑ plain-text chars to SF Symbol attachments
-        DispatchQueue.main.async { self.textView.convertTextCheckboxesToAttachments() }
+            .contains { $0.hasPrefix("\u{FFFC}") || $0.hasPrefix("☐") || $0.hasPrefix("☑") }
         textView.delegate = self
         textView.onFocus = { [weak self] in
             guard let self = self else { return }
@@ -1204,8 +1153,7 @@ class SectionCellView: NSTableCellView {
                 ? self.textView.textStorage?.rtf(
                     from: NSRange(location: 0, length: len), documentAttributes: [:])
                 : nil
-            self.ctrl?.update(id: self.sectionId,
-                              content: self.textView.plainTextForStorage(), rtfData: rtf)
+            self.ctrl?.update(id: self.sectionId, content: self.textView.string, rtfData: rtf)
         }
         addSubview(textView)
 
@@ -1440,7 +1388,7 @@ extension SectionCellView: NSTextViewDelegate {
             ? textView.textStorage?.rtf(
                 from: NSRange(location: 0, length: len), documentAttributes: [:])
             : nil
-        ctrl?.update(id: sectionId, content: textView.plainTextForStorage(), rtfData: rtf)
+        ctrl?.update(id: sectionId, content: textView.string, rtfData: rtf)
         ctrl?.refreshRowHeight(for: self)
     }
 
