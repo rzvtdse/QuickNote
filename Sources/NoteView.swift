@@ -369,6 +369,11 @@ class SectionsController: NSObject {
             guard let self = self else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let ch = event.charactersIgnoringModifiers?.lowercased()
+            // Cmd+N — new tab
+            if flags == .command, ch == "n" {
+                self.addBucket()
+                return nil
+            }
             // Cmd+F
             if flags == .command, ch == "f" {
                 self.showSearch()
@@ -731,7 +736,10 @@ class SectionsController: NSObject {
     }
 
     @objc private func addBucket() {
-        let b = NoteBucket(name: "Note \(buckets.count + 1)")
+        let existingNames = Set(buckets.map { $0.name })
+        var n = buckets.count + 1
+        while existingNames.contains("Note \(n)") { n += 1 }
+        let b = NoteBucket(name: "Note \(n)")
         buckets.append(b)
         bucketHistory.append(activeBucketId)
         activeBucketId = b.id
