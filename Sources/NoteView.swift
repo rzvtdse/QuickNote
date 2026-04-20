@@ -229,7 +229,7 @@ class SectionsController: NSObject {
     private var undoSectionTimer: Timer?
     private var searchField: NSSearchField!
     private var searchHeightConstraint: NSLayoutConstraint!
-    private var bucketBar: NSStackView!
+    private var bucketBar: BucketBarView!
     private var selectedIds: Set<String> = []
     private var deletedBucketStack: [(bucket: NoteBucket, sections: [NoteSection])] = []
     private var deletedSectionStack: [(section: NoteSection, index: Int)] = []
@@ -252,14 +252,19 @@ class SectionsController: NSObject {
         load()
         ensureDefaultBucket()
 
-        // Bucket tab bar
-        bucketBar = NSStackView()
+        // Bucket tab bar — custom view does manual frame layout so tabs shrink to fit
+        bucketBar = BucketBarView()
         bucketBar.translatesAutoresizingMaskIntoConstraints = false
-        bucketBar.orientation = .horizontal
-        bucketBar.spacing = 4
-        bucketBar.alignment = .centerY
-        bucketBar.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
         parent.addSubview(bucketBar)
+
+        // + button sits to the right of the tab bar, fixed size
+        let addTabBtn = NSButton(title: "+", target: self, action: #selector(addBucket))
+        addTabBtn.translatesAutoresizingMaskIntoConstraints = false
+        addTabBtn.isBordered = false
+        addTabBtn.bezelStyle = .inline
+        addTabBtn.font = NSFont.systemFont(ofSize: 16, weight: .light)
+        addTabBtn.contentTintColor = NSColor.white.withAlphaComponent(0.45)
+        parent.addSubview(addTabBtn)
 
         // Search field (hidden until Cmd+F)
         searchField = NSSearchField()
@@ -342,17 +347,22 @@ class SectionsController: NSObject {
 
         searchHeightConstraint = searchField.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
-            bucketBar.topAnchor.constraint(equalTo: parent.topAnchor, constant: 8),
-            bucketBar.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 8),
-            bucketBar.trailingAnchor.constraint(lessThanOrEqualTo: parent.trailingAnchor, constant: -8),
-            bucketBar.heightAnchor.constraint(equalToConstant: 32),
+            addTabBtn.centerYAnchor.constraint(equalTo: bucketBar.centerYAnchor),
+            addTabBtn.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -8),
+            addTabBtn.widthAnchor.constraint(equalToConstant: 24),
+            addTabBtn.heightAnchor.constraint(equalToConstant: 24),
 
-            searchField.topAnchor.constraint(equalTo: bucketBar.bottomAnchor, constant: 8),
+            bucketBar.topAnchor.constraint(equalTo: parent.topAnchor, constant: 18),
+            bucketBar.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 8),
+            bucketBar.trailingAnchor.constraint(equalTo: addTabBtn.leadingAnchor, constant: -4),
+            bucketBar.heightAnchor.constraint(equalToConstant: 28),
+
+            searchField.topAnchor.constraint(equalTo: bucketBar.bottomAnchor, constant: 0),
             searchField.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 8),
             searchField.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -8),
             searchHeightConstraint,
 
-            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
+            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 4),
             scroll.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 8),
             scroll.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -8),
             scroll.bottomAnchor.constraint(equalTo: bottomStack.topAnchor, constant: -8),
@@ -636,7 +646,7 @@ class SectionsController: NSObject {
     }
 
     private func rebuildBucketBar() {
-        bucketBar.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        var tabs: [BucketTabView] = []
         for b in buckets {
             let tab = BucketTabView(bucketId: b.id, name: b.name)
             tab.isActive = (b.id == activeBucketId)
@@ -644,19 +654,9 @@ class SectionsController: NSObject {
             tab.onRename = { [weak self] newName in self?.renameBucket(id: b.id, to: newName) }
             tab.onRequestDelete = { [weak self] in self?.deleteBucket(id: b.id) }
             tab.onDidEndEditing = { [weak self] in self?.focusLastSection() }
-            bucketBar.addArrangedSubview(tab)
+            tabs.append(tab)
         }
-        let plus = NSButton(title: "+", target: self, action: #selector(addBucket))
-        plus.isBordered = false
-        plus.bezelStyle = .inline
-        plus.font = NSFont.systemFont(ofSize: 16, weight: .light)
-        plus.contentTintColor = NSColor.white.withAlphaComponent(0.45)
-        plus.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            plus.widthAnchor.constraint(equalToConstant: 24),
-            plus.heightAnchor.constraint(equalToConstant: 24),
-        ])
-        bucketBar.addArrangedSubview(plus)
+        bucketBar.setTabs(tabs)
     }
 
     private func renameBucket(id: String, to newName: String) {
@@ -725,10 +725,8 @@ class SectionsController: NSObject {
         }
         // Update active state on existing tabs in place (don't destroy them
         // mid-click, otherwise double-click-to-rename never sees clickCount == 2)
-        for v in bucketBar.arrangedSubviews {
-            if let tab = v as? BucketTabView {
-                tab.isActive = (tab.bucketId == id)
-            }
+        for tab in bucketBar.tabs {
+            tab.isActive = (tab.bucketId == id)
         }
         tableView.reloadData()
         updateSelectionUI()
@@ -1113,6 +1111,36 @@ extension SectionCellView: NSTextViewDelegate {
         }
         return false
     }
+}
+
+// MARK: - Tab Bar (manual layout so tabs shrink to fit without fighting AutoLayout)
+
+class BucketBarView: NSView {
+    private(set) var tabs: [BucketTabView] = []
+    var spacing: CGFloat = 4
+    var maxTabWidth: CGFloat = 160
+
+    func setTabs(_ newTabs: [BucketTabView]) {
+        tabs.forEach { $0.removeFromSuperview() }
+        tabs = newTabs
+        tabs.forEach { addSubview($0) }
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        guard !tabs.isEmpty else { return }
+        let n = CGFloat(tabs.count)
+        let totalSpacing = spacing * (n - 1)
+        let tabWidth = min(maxTabWidth, max(40, (bounds.width - totalSpacing) / n))
+        var x: CGFloat = 0
+        for tab in tabs {
+            tab.frame = CGRect(x: x, y: 0, width: tabWidth, height: bounds.height)
+            x += tabWidth + spacing
+        }
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
 }
 
 // MARK: - Chrome-style Bucket Tab
