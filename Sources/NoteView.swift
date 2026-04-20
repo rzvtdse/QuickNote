@@ -987,6 +987,9 @@ class BucketTabView: NSView, NSTextFieldDelegate {
         NSSize(width: label.intrinsicContentSize.width + 28, height: 26)
     }
 
+    // Prevent the window-background-drag from swallowing clicks on the tab
+    override var mouseDownCanMoveWindow: Bool { false }
+
     // MARK: Tracking / hover
 
     override func updateTrackingAreas() {
