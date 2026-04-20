@@ -48,19 +48,9 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
         return 0
     }
 
-    // MARK: - Strikethrough (Cmd+Shift+X)
+    // MARK: - Strikethrough
 
-    override func keyDown(with event: NSEvent) {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags == [.command, .shift],
-           event.charactersIgnoringModifiers?.lowercased() == "x" {
-            toggleStrikethrough()
-            return
-        }
-        super.keyDown(with: event)
-    }
-
-    private func toggleStrikethrough() {
+    func toggleStrikethrough() {
         guard let storage = textStorage else { return }
         let range = selectedRange()
         guard range.length > 0 else { return }
@@ -443,6 +433,13 @@ class SectionsController: NSObject {
             // Cmd+Shift+T — restore last deleted bucket
             if flags == [.command, .shift], ch == "t" {
                 self.restoreLastDeletedBucket()
+                return nil
+            }
+            // Cmd+Shift+X — toggle strikethrough on selected text
+            if flags == [.command, .shift], ch == "x" {
+                if let tv = event.window?.firstResponder as? SectionTextView {
+                    tv.toggleStrikethrough()
+                }
                 return nil
             }
             // Option+Shift+T — restore last deleted section
