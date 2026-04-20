@@ -200,7 +200,18 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
 struct NoteSection: Codable {
     var id: String
     var content: String
-    init(content: String = "") { self.id = UUID().uuidString; self.content = content }
+    var bucketId: String?
+    init(content: String = "", bucketId: String? = nil) {
+        self.id = UUID().uuidString
+        self.content = content
+        self.bucketId = bucketId
+    }
+}
+
+struct NoteBucket: Codable {
+    var id: String
+    var name: String
+    init(name: String) { self.id = UUID().uuidString; self.name = name }
 }
 
 // MARK: - Controller
@@ -208,11 +219,14 @@ struct NoteSection: Codable {
 class SectionsController: NSObject {
 
     private var sections: [NoteSection] = []
+    private var buckets: [NoteBucket] = []
+    private var activeBucketId: String = ""
     private var searchQuery: String = ""
     private var tableView: NSTableView!
     private var mergeButton: NSButton!
     private var searchField: NSSearchField!
     private var searchHeightConstraint: NSLayoutConstraint!
+    private var bucketBar: NSStackView!
     private var selectedIds: Set<String> = []
     private var eventMonitor: Any?
     private var keyMonitor: Any?
@@ -220,16 +234,26 @@ class SectionsController: NSObject {
 
     private static let pbType = NSPasteboard.PasteboardType("com.quicknote.section")
 
+    /// Sections in the active bucket, further filtered by search query.
     private var filteredSections: [NoteSection] {
-        guard !searchQuery.isEmpty else { return sections }
-        return sections.filter { $0.content.localizedCaseInsensitiveContains(searchQuery) }
+        let inBucket = sections.filter { ($0.bucketId ?? "") == activeBucketId }
+        guard !searchQuery.isEmpty else { return inBucket }
+        return inBucket.filter { $0.content.localizedCaseInsensitiveContains(searchQuery) }
     }
 
     // MARK: Build UI
 
     func build(in parent: NSView) {
         load()
-        if sections.isEmpty { sections = [NoteSection()] }
+        ensureDefaultBucket()
+
+        // Bucket tab bar
+        bucketBar = NSStackView()
+        bucketBar.translatesAutoresizingMaskIntoConstraints = false
+        bucketBar.orientation = .horizontal
+        bucketBar.spacing = 4
+        bucketBar.alignment = .centerY
+        parent.addSubview(bucketBar)
 
         // Search field (hidden until Cmd+F)
         searchField = NSSearchField()
@@ -294,7 +318,11 @@ class SectionsController: NSObject {
 
         searchHeightConstraint = searchField.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
-            searchField.topAnchor.constraint(equalTo: parent.topAnchor, constant: 6),
+            bucketBar.topAnchor.constraint(equalTo: parent.topAnchor, constant: 6),
+            bucketBar.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 10),
+            bucketBar.trailingAnchor.constraint(lessThanOrEqualTo: parent.trailingAnchor, constant: -10),
+
+            searchField.topAnchor.constraint(equalTo: bucketBar.bottomAnchor, constant: 6),
             searchField.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 10),
             searchField.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -10),
             searchHeightConstraint,
@@ -307,6 +335,8 @@ class SectionsController: NSObject {
             bottomStack.centerXAnchor.constraint(equalTo: parent.centerXAnchor),
             bottomStack.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -10),
         ])
+
+        rebuildBucketBar()
 
         // Cmd+F to reveal search, Esc to dismiss it
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -410,7 +440,7 @@ class SectionsController: NSObject {
 
     @objc func addSection() {
         selectedIds.removeAll()
-        sections.append(NoteSection())
+        sections.append(NoteSection(bucketId: activeBucketId))
         tableView.reloadData()
         save()
         DispatchQueue.main.async {
@@ -424,12 +454,13 @@ class SectionsController: NSObject {
     func split(id: String, before: String, after: String) {
         guard let idx = sections.firstIndex(where: { $0.id == id }) else { return }
         sections[idx].content = before
-        sections.insert(NoteSection(content: after), at: idx + 1)
+        let newSection = NoteSection(content: after, bucketId: sections[idx].bucketId)
+        sections.insert(newSection, at: idx + 1)
         save()
         tableView.reloadData()
+        let newSectionId = newSection.id
         DispatchQueue.main.async {
-            let newRow = idx + 1
-            guard newRow < self.tableView.numberOfRows else { return }
+            guard let newRow = self.filteredSections.firstIndex(where: { $0.id == newSectionId }) else { return }
             self.tableView.scrollRowToVisible(newRow)
             (self.tableView.view(atColumn: 0, row: newRow, makeIfNecessary: false) as? SectionCellView)?.focus()
         }
@@ -444,7 +475,9 @@ class SectionsController: NSObject {
 
     func delete(id: String) {
         sections.removeAll { $0.id == id }
-        if sections.isEmpty { sections = [NoteSection()] }
+        if !sections.contains(where: { $0.bucketId == activeBucketId }) {
+            sections.append(NoteSection(bucketId: activeBucketId))
+        }
         selectedIds.removeAll()
         tableView.reloadData()
         save()
@@ -457,6 +490,147 @@ class SectionsController: NSObject {
             ctx.duration = 0
             self.tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
         }
+    }
+
+    // MARK: Buckets
+
+    private func ensureDefaultBucket() {
+        if buckets.isEmpty {
+            let b = NoteBucket(name: "Notes")
+            buckets = [b]
+            activeBucketId = b.id
+        }
+        if !buckets.contains(where: { $0.id == activeBucketId }) {
+            activeBucketId = buckets[0].id
+        }
+        // Migrate any legacy sections with no bucket → active bucket
+        var changed = false
+        for i in sections.indices where sections[i].bucketId == nil {
+            sections[i].bucketId = activeBucketId
+            changed = true
+        }
+        if sections.isEmpty {
+            sections = [NoteSection(bucketId: activeBucketId)]
+            changed = true
+        } else if !sections.contains(where: { $0.bucketId == activeBucketId }) {
+            sections.append(NoteSection(bucketId: activeBucketId))
+            changed = true
+        }
+        if changed { save() }
+    }
+
+    private func rebuildBucketBar() {
+        bucketBar.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for b in buckets {
+            let btn = NSButton(title: b.name, target: self, action: #selector(bucketTabClicked(_:)))
+            btn.identifier = NSUserInterfaceItemIdentifier(b.id)
+            btn.isBordered = false
+            btn.bezelStyle = .inline
+            btn.font = NSFont.systemFont(ofSize: 12, weight: b.id == activeBucketId ? .semibold : .regular)
+            btn.contentTintColor = b.id == activeBucketId
+                ? NSColor.white.withAlphaComponent(0.95)
+                : NSColor.white.withAlphaComponent(0.4)
+            // Right-click menu for rename / delete
+            let menu = NSMenu()
+            let rename = NSMenuItem(title: "Rename…", action: #selector(bucketRenameMenu(_:)), keyEquivalent: "")
+            rename.target = self
+            rename.representedObject = b.id
+            let del = NSMenuItem(title: "Delete", action: #selector(bucketDeleteMenu(_:)), keyEquivalent: "")
+            del.target = self
+            del.representedObject = b.id
+            menu.addItem(rename)
+            menu.addItem(del)
+            btn.menu = menu
+            bucketBar.addArrangedSubview(btn)
+        }
+        let plus = NSButton(title: "+", target: self, action: #selector(addBucket))
+        plus.isBordered = false
+        plus.bezelStyle = .inline
+        plus.font = NSFont.systemFont(ofSize: 13, weight: .light)
+        plus.contentTintColor = NSColor.white.withAlphaComponent(0.4)
+        bucketBar.addArrangedSubview(plus)
+    }
+
+    @objc private func bucketTabClicked(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue, id != activeBucketId else { return }
+        switchToBucket(id)
+    }
+
+    private func switchToBucket(_ id: String) {
+        activeBucketId = id
+        UserDefaults.standard.set(id, forKey: "qn_active_bucket")
+        selectedIds.removeAll()
+        // Ensure bucket has at least one section
+        if !sections.contains(where: { $0.bucketId == id }) {
+            sections.append(NoteSection(bucketId: id))
+            save()
+        }
+        rebuildBucketBar()
+        tableView.reloadData()
+        updateSelectionUI()
+    }
+
+    @objc private func addBucket() {
+        let alert = NSAlert()
+        alert.messageText = "New bucket"
+        alert.informativeText = "Name your bucket:"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 22))
+        input.stringValue = "Bucket \(buckets.count + 1)"
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            let name = input.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty else { return }
+            let b = NoteBucket(name: name)
+            buckets.append(b)
+            save()
+            switchToBucket(b.id)
+        }
+    }
+
+    @objc private func bucketRenameMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let idx = buckets.firstIndex(where: { $0.id == id }) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Rename bucket"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 22))
+        input.stringValue = buckets[idx].name
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            let name = input.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty else { return }
+            buckets[idx].name = name
+            save()
+            rebuildBucketBar()
+        }
+    }
+
+    @objc private func bucketDeleteMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let idx = buckets.firstIndex(where: { $0.id == id }) else { return }
+        if buckets.count <= 1 {
+            let a = NSAlert()
+            a.messageText = "Can't delete the last bucket."
+            a.runModal()
+            return
+        }
+        let confirm = NSAlert()
+        confirm.messageText = "Delete bucket \"\(buckets[idx].name)\"?"
+        confirm.informativeText = "All sections in this bucket will be permanently deleted."
+        confirm.addButton(withTitle: "Delete")
+        confirm.addButton(withTitle: "Cancel")
+        confirm.alertStyle = .warning
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        sections.removeAll { $0.bucketId == id }
+        buckets.remove(at: idx)
+        if activeBucketId == id {
+            activeBucketId = buckets[0].id
+        }
+        save()
+        switchToBucket(activeBucketId)
     }
 
     // MARK: Persistence
@@ -482,13 +656,22 @@ class SectionsController: NSObject {
 
     func save() {
         UserDefaults.standard.set(try? JSONEncoder().encode(sections), forKey: "qn_sections_v1")
+        UserDefaults.standard.set(try? JSONEncoder().encode(buckets), forKey: "qn_buckets_v1")
+        UserDefaults.standard.set(activeBucketId, forKey: "qn_active_bucket")
     }
 
     func load() {
-        guard let data = UserDefaults.standard.data(forKey: "qn_sections_v1"),
-              let saved = try? JSONDecoder().decode([NoteSection].self, from: data)
-        else { return }
-        sections = saved
+        if let data = UserDefaults.standard.data(forKey: "qn_sections_v1"),
+           let saved = try? JSONDecoder().decode([NoteSection].self, from: data) {
+            sections = saved
+        }
+        if let data = UserDefaults.standard.data(forKey: "qn_buckets_v1"),
+           let saved = try? JSONDecoder().decode([NoteBucket].self, from: data) {
+            buckets = saved
+        }
+        if let id = UserDefaults.standard.string(forKey: "qn_active_bucket") {
+            activeBucketId = id
+        }
     }
 }
 
@@ -525,10 +708,20 @@ extension SectionsController: NSTableViewDataSource, NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int,
                    dropOperation: NSTableView.DropOperation) -> Bool {
         guard let fromId = info.draggingPasteboard.string(forType: SectionsController.pbType),
-              let fromIdx = sections.firstIndex(where: { $0.id == fromId }) else { return false }
-        let moved = sections.remove(at: fromIdx)
-        let toIdx = min(row > fromIdx ? row - 1 : row, sections.count)
-        sections.insert(moved, at: toIdx)
+              let fromGlobal = sections.firstIndex(where: { $0.id == fromId }) else { return false }
+        // `row` is an index into filteredSections; map it to a global insertion index.
+        let filtered = filteredSections
+        let targetGlobal: Int
+        if row >= filtered.count {
+            // Dropped after last filtered row; insert after last section in this bucket
+            targetGlobal = (sections.lastIndex(where: { $0.bucketId == activeBucketId }) ?? sections.count - 1) + 1
+        } else {
+            let anchorId = filtered[row].id
+            targetGlobal = sections.firstIndex(where: { $0.id == anchorId }) ?? sections.count
+        }
+        let moved = sections.remove(at: fromGlobal)
+        let adjusted = targetGlobal > fromGlobal ? targetGlobal - 1 : targetGlobal
+        sections.insert(moved, at: min(adjusted, sections.count))
         tableView.reloadData()
         save()
         return true

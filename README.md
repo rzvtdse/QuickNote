@@ -7,6 +7,7 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 ## Features
 
 - **Floating HUD panel** — semi-transparent, always on top, across all spaces
+- **Buckets** — group sections into named tabs; click `+` to add, right-click a tab to rename or delete
 - **Sections** — multiple independent note cards in one window
 - **Search** — `Cmd+F` to open the search bar, `Esc` to dismiss
 - **Drag to reorder** — rearrange sections by dragging the `· · ·` handle
@@ -29,6 +30,9 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 |---|---|
 | Show / hide | `Cmd+Shift+Space` or click the **N** menu bar icon |
 | New section | `Cmd+Shift+N` or type ` ``` ` anywhere in a section |
+| Switch bucket | Click a tab at the top |
+| New bucket | Click `+` in the tab bar |
+| Rename / delete bucket | Right-click its tab |
 | Search | `Cmd+F` to open, `Esc` to close |
 | Navigate sections | `Tab` / `Shift+Tab` |
 | Select sections | `Cmd+click` |
