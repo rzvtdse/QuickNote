@@ -6,6 +6,9 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
     var onFocus: (() -> Void)?
     var onBlur: (() -> Void)?
     var onProgrammaticChange: (() -> Void)?
+    /// Called after a direct storage modification (e.g. strikethrough toggle) so
+    /// the cell view can persist the updated rich-text data.
+    var onTextStorageChanged: (() -> Void)?
 
     private var isProcessingLinks = false
     fileprivate static let linkKey    = NSAttributedString.Key("QNLink")
@@ -43,6 +46,52 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
             return count
         }
         return 0
+    }
+
+    // MARK: - Strikethrough (Cmd+Shift+X)
+
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == [.command, .shift],
+           event.charactersIgnoringModifiers?.lowercased() == "x" {
+            toggleStrikethrough()
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    private func toggleStrikethrough() {
+        guard let storage = textStorage else { return }
+        let range = selectedRange()
+        guard range.length > 0 else { return }
+
+        // Determine whether the entire selection already has strikethrough
+        var allStruck = true
+        storage.enumerateAttribute(.strikethroughStyle, in: range, options: []) { val, _, stop in
+            let v = val as? Int ?? 0
+            if v == 0 { allStruck = false; stop.pointee = true }
+        }
+
+        storage.beginEditing()
+        if allStruck {
+            storage.removeAttribute(.strikethroughStyle, range: range)
+        } else {
+            storage.addAttribute(.strikethroughStyle,
+                                 value: NSUnderlineStyle.single.rawValue,
+                                 range: range)
+        }
+        storage.endEditing()
+
+        // Mirror the change in typing attributes so new characters follow suit
+        var ta = typingAttributes
+        if allStruck {
+            ta.removeValue(forKey: .strikethroughStyle)
+        } else {
+            ta[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+        }
+        typingAttributes = ta
+
+        onTextStorageChanged?()
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -201,10 +250,12 @@ struct NoteSection: Codable {
     var id: String
     var content: String
     var bucketId: String?
+    var rtfData: Data?          // rich-text blob; nil for plain-text-only sections
     init(content: String = "", bucketId: String? = nil) {
         self.id = UUID().uuidString
         self.content = content
         self.bucketId = bucketId
+        self.rtfData = nil
     }
 }
 
@@ -518,9 +569,10 @@ class SectionsController: NSObject {
         }
     }
 
-    func update(id: String, content: String) {
+    func update(id: String, content: String, rtfData: Data? = nil) {
         guard let idx = sections.firstIndex(where: { $0.id == id }) else { return }
         sections[idx].content = content
+        sections[idx].rtfData = rtfData
         rememberLastSection(id)
         save()
     }
@@ -550,8 +602,9 @@ class SectionsController: NSObject {
 
     func duplicate(id: String) {
         guard let idx = sections.firstIndex(where: { $0.id == id }) else { return }
-        var copy = sections[idx]
-        copy = NoteSection(content: copy.content, bucketId: copy.bucketId)
+        let original = sections[idx]
+        var copy = NoteSection(content: original.content, bucketId: original.bucketId)
+        copy.rtfData = original.rtfData
         sections.insert(copy, at: idx + 1)
         save()
         tableView.reloadData()
@@ -936,7 +989,7 @@ class SectionCellView: NSTableCellView {
         // Text view
         textView = SectionTextView()
         textView.translatesAutoresizingMaskIntoConstraints = false
-        textView.isRichText = false
+        textView.isRichText = true            // required for strikethrough support
         textView.backgroundColor = .clear
         textView.textColor = NSColor.labelColor
         textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
@@ -958,7 +1011,18 @@ class SectionCellView: NSTableCellView {
             .backgroundColor: NSColor.controlAccentColor.withAlphaComponent(0.25),
             .foregroundColor: NSColor.labelColor,
         ]
-        textView.string = section.content
+        // Load rich text if available, otherwise fall back to plain content
+        if let rtf = section.rtfData,
+           let attrStr = NSAttributedString(rtf: rtf, documentAttributes: nil) {
+            textView.textStorage?.setAttributedString(attrStr)
+        } else {
+            textView.string = section.content
+        }
+        // Ensure new typing uses the correct base font & colour
+        textView.typingAttributes = [
+            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+            .foregroundColor: NSColor.labelColor,
+        ]
         textView.delegate = self
         textView.onFocus = { [weak self] in
             guard let self = self else { return }
@@ -970,6 +1034,16 @@ class SectionCellView: NSTableCellView {
             guard let self = self else { return }
             self.ctrl?.update(id: self.sectionId, content: self.textView.string)
             self.ctrl?.refreshRowHeight(for: self)
+        }
+        // Persist after a direct storage change (e.g. strikethrough toggle)
+        textView.onTextStorageChanged = { [weak self] in
+            guard let self = self else { return }
+            let len = self.textView.textStorage?.length ?? 0
+            let rtf = len > 0
+                ? self.textView.textStorage?.rtf(
+                    from: NSRange(location: 0, length: len), documentAttributes: [:])
+                : nil
+            self.ctrl?.update(id: self.sectionId, content: self.textView.string, rtfData: rtf)
         }
         addSubview(textView)
 
@@ -1083,8 +1157,19 @@ extension SectionCellView: NSTextViewDelegate {
 
     func textDidChange(_ notification: Notification) {
         textView.breakUndoCoalescing()
+        // Keep base font & colour on typing attributes but preserve any rich-text
+        // state (e.g. strikethrough) the user may have set.
+        var ta = textView.typingAttributes
+        ta[.font] = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        ta[.foregroundColor] = NSColor.labelColor
+        textView.typingAttributes = ta
         textView.processLinks()
-        ctrl?.update(id: sectionId, content: textView.string)
+        let len = textView.textStorage?.length ?? 0
+        let rtf = len > 0
+            ? textView.textStorage?.rtf(
+                from: NSRange(location: 0, length: len), documentAttributes: [:])
+            : nil
+        ctrl?.update(id: sectionId, content: textView.string, rtfData: rtf)
         ctrl?.refreshRowHeight(for: self)
     }
 

@@ -20,6 +20,7 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 - **Smart links** — URLs auto-collapse to domain; double-click to expand/collapse, `Option+click` to open
 - **Auto-focus** — reopening the panel focuses the last section you were in
 - **Per-bucket focus** — switching tabs resumes at the last section you edited in that tab
+- **Strikethrough** — select text and press `Cmd+Shift+X` to toggle strikethrough; persists across sessions
 - **Undo / Redo** — per-keystroke undo, not all-at-once
 - **Restore deleted section** — `Option+Shift+T` or click the **Undo** button that appears after deletion
 - **Restore closed tab** — `Cmd+Shift+T` restores the most recently closed tab with all its sections
@@ -50,6 +51,7 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 | Delete section | Click `×` in the section header |
 | Open link | `Option+click` on a URL |
 | Expand / collapse link | Double-click on a URL |
+| Strikethrough | Select text, then `Cmd+Shift+X` |
 | Cut / Copy / Paste | `Cmd+X` / `Cmd+C` / `Cmd+V` |
 | Undo / Redo | `Cmd+Z` / `Cmd+Shift+Z` |
 | Select all | `Cmd+A` |
