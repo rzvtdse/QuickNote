@@ -17,7 +17,7 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 - **Duplicate button** — duplicate a section and place it directly below, cursor moves to the new one
 - **Tab navigation** — `Tab` / `Shift+Tab` cycles focus between sections
 - **Hover highlight** — sections brighten on mouse over
-- **Checklists** — type `/list` to start a checklist; `Enter` adds a new item, click `☐` to check/uncheck, type `\list` to end
+- **Checklists** — type `/list` then `Enter` (or press `Cmd+Option+L`) to start a checklist; `Enter` adds a new item, `Enter` on an empty item ends the list, click `☐`/`☑` to toggle
 - **Smart links** — URLs auto-collapse to domain; double-click to expand/collapse, `Option+click` to open
 - **Auto-focus** — reopening the panel focuses the last section you were in
 - **Per-bucket focus** — switching tabs resumes at the last section you edited in that tab
@@ -37,9 +37,9 @@ A minimal, semi-transparent floating note-taking app for macOS. Lives in the men
 |---|---|
 | Show / hide | `Cmd+Shift+Space` or click the **N** menu bar icon |
 | New section | `Cmd+Shift+N` or type ` ``` ` anywhere in a section |
-| Start checklist | Type `/list` |
-| End checklist | Type `\list` |
-| Check / uncheck item | Click the `☐` / `☑` |
+| Start checklist | Type `/list` then `Enter`, or `Cmd+Option+L` |
+| End checklist | `Enter` on an empty checklist item |
+| Check / uncheck item | Click `☐` / `☑` |
 | Switch bucket | Click a tab at the top |
 | New bucket | `Cmd+N` or click `+` in the tab bar |
 | Rename bucket | Double-click its tab |
