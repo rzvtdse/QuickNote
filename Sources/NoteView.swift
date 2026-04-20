@@ -572,10 +572,7 @@ class SectionsController: NSObject {
     }
 
     private func switchToBucket(_ id: String) {
-        if id == activeBucketId {
-            DispatchQueue.main.async { self.focusLastSection() }
-            return
-        }
+        if id == activeBucketId { return }
         activeBucketId = id
         UserDefaults.standard.set(id, forKey: "qn_active_bucket")
         selectedIds.removeAll()
@@ -1101,8 +1098,13 @@ class BucketTabView: NSView, NSTextFieldDelegate {
         ])
         label.isHidden = true
         editor = tf
-        window?.makeFirstResponder(tf)
-        tf.selectText(nil)
+        // Async so this focus runs AFTER any pending focusLastSection that
+        // a single-click triggered on this same tab.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.editor === tf else { return }
+            self.window?.makeFirstResponder(tf)
+            tf.selectText(nil)
+        }
     }
 
     private func commitEditing(cancel: Bool) {
