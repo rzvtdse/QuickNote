@@ -1558,6 +1558,12 @@ class BucketBarView: NSView {
     private var draggingTab: BucketTabView?
     private var draggingOriginalIndex = 0
 
+    private func tabWidth(forCount count: Int) -> CGFloat {
+        let n = CGFloat(max(1, count))
+        let totalSpacing = spacing * (n - 1)
+        return min(maxTabWidth, max(40, (bounds.width - totalSpacing) / n))
+    }
+
     func setTabs(_ newTabs: [BucketTabView]) {
         tabs.forEach { $0.removeFromSuperview() }
         tabs = newTabs
@@ -1576,17 +1582,26 @@ class BucketBarView: NSView {
     }
 
     private func handleDrag(tab: BucketTabView, event: NSEvent) {
+        let mouseX = convert(event.locationInWindow, from: nil).x
+        let tw = tabWidth(forCount: tabs.count)
+
         if draggingTab == nil {
             draggingTab = tab
             draggingOriginalIndex = tabs.firstIndex(of: tab) ?? 0
-            tab.layer?.opacity = 0.7
-            addSubview(tab)         // bring to front
+            tab.layer?.zPosition = 10
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.1
+                tab.animator().alphaValue = 0.75
+            }
+            addSubview(tab)  // bring to front
         }
 
-        let mouseX = convert(event.locationInWindow, from: nil).x
-        guard let currentIndex = tabs.firstIndex(of: tab) else { return }
+        // Dragged tab follows cursor, clamped within bar bounds
+        let clampedX = max(0, min(bounds.width - tw, mouseX - tw / 2))
+        tab.frame = CGRect(x: clampedX, y: 0, width: tw, height: bounds.height)
 
-        // Count how many OTHER tabs have their midX left of the mouse → insert after them
+        // Determine where in the order the dragged tab should land
+        guard let currentIndex = tabs.firstIndex(of: tab) else { return }
         var targetIndex = 0
         for t in tabs where t !== tab {
             if t.frame.midX < mouseX { targetIndex += 1 }
@@ -1596,27 +1611,47 @@ class BucketBarView: NSView {
 
         tabs.remove(at: currentIndex)
         tabs.insert(tab, at: targetIndex)
-        layout()   // repositions the non-dragged tabs; dragged tab frame set above
+
+        // Animate non-dragged tabs into their new slots, leaving a gap for the dragged tab
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            ctx.allowsImplicitAnimation = true
+            for (i, t) in tabs.enumerated() where t !== tab {
+                t.animator().frame = CGRect(x: CGFloat(i) * (tw + spacing), y: 0,
+                                            width: tw, height: bounds.height)
+            }
+        }
     }
 
     private func commitDrag(tab: BucketTabView) {
-        tab.layer?.opacity = 1
-        if let finalIndex = tabs.firstIndex(of: tab), finalIndex != draggingOriginalIndex {
-            onReorder?(draggingOriginalIndex, finalIndex)
+        guard let finalIndex = tabs.firstIndex(of: tab) else {
+            tab.layer?.zPosition = 0
+            tab.alphaValue = 1
+            draggingTab = nil
+            return
         }
+        let tw = tabWidth(forCount: tabs.count)
+        let finalX = CGFloat(finalIndex) * (tw + spacing)
+        let didMove = finalIndex != draggingOriginalIndex
+        let from = draggingOriginalIndex
         draggingTab = nil
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.15
+            tab.animator().frame = CGRect(x: finalX, y: 0, width: tw, height: bounds.height)
+            tab.animator().alphaValue = 1
+        }, completionHandler: { [weak tab, weak self] in
+            tab?.layer?.zPosition = 0
+            if didMove { self?.onReorder?(from, finalIndex) }
+        })
     }
 
     override func layout() {
         super.layout()
         guard !tabs.isEmpty else { return }
-        let n = CGFloat(tabs.count)
-        let totalSpacing = spacing * (n - 1)
-        let tabWidth = min(maxTabWidth, max(40, (bounds.width - totalSpacing) / n))
-        var x: CGFloat = 0
-        for tab in tabs {
-            tab.frame = CGRect(x: x, y: 0, width: tabWidth, height: bounds.height)
-            x += tabWidth + spacing
+        let tw = tabWidth(forCount: tabs.count)
+        for (i, tab) in tabs.enumerated() where tab !== draggingTab {
+            tab.frame = CGRect(x: CGFloat(i) * (tw + spacing), y: 0, width: tw, height: bounds.height)
         }
     }
 
@@ -1795,14 +1830,18 @@ class BucketTabView: NSView, NSTextViewDelegate {
             alpha = 0.18
             label.textColor = .white
             label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+            layer?.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
+            layer?.borderWidth = 1
         } else if isHovered {
             alpha = 0.09
             label.textColor = NSColor.white.withAlphaComponent(0.75)
             label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+            layer?.borderWidth = 0
         } else {
             alpha = 0
             label.textColor = NSColor.white.withAlphaComponent(0.55)
             label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+            layer?.borderWidth = 0
         }
         layer?.backgroundColor = NSColor.white.withAlphaComponent(alpha).cgColor
         closeButton.alphaValue = (isHovered || isActive) ? 1.0 : 0.0
