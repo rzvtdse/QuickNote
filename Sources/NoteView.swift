@@ -11,6 +11,9 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
     var onTextStorageChanged: (() -> Void)?
     /// Tracks whether this text view is currently in checklist mode.
     var isInListMode = false
+    /// Set to true during batch programmatic insertions to prevent breakUndoCoalescing
+    /// from fragmenting the undo stack across multiple insertText calls.
+    var suppressBreakUndoCoalescing = false
 
     private var isProcessingLinks = false
     fileprivate static let linkKey     = NSAttributedString.Key("QNLink")
@@ -249,8 +252,17 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
             .foregroundColor: NSColor.labelColor,
         ])
 
+        // Suppress per-keystroke undo coalescing breaks so all insertions
+        // land in one undo group and Cmd+Z reverts the whole conversion at once.
+        breakUndoCoalescing()
+        suppressBreakUndoCoalescing = true
+        undoManager?.beginUndoGrouping()
+        // defer guarantees cleanup even if something goes wrong mid-loop
+        defer {
+            undoManager?.endUndoGrouping()
+            suppressBreakUndoCoalescing = false
+        }
         // Insert checkboxes backwards so earlier indices stay valid
-        storage.beginEditing()
         for lineRange in lineRanges.reversed() {
             // Skip blank lines
             let content = nsStr.substring(with: lineRange)
@@ -262,11 +274,9 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
             let insertion = NSMutableAttributedString(
                 attributedString: SectionTextView.checkboxAttrStr(checked: false))
             insertion.append(spacer)
-            storage.replaceCharacters(in: NSRange(location: lineRange.location, length: 0),
-                                      with: insertion)
+            // insertText goes through the proper undo registration path
+            insertText(insertion, replacementRange: NSRange(location: lineRange.location, length: 0))
         }
-        storage.endEditing()
-        didChangeText()
         isInListMode = true
     }
 
@@ -1589,7 +1599,9 @@ extension SectionCellView: NSTextViewDelegate {
     }
 
     func textDidChange(_ notification: Notification) {
-        textView.breakUndoCoalescing()
+        if !(textView as SectionTextView).suppressBreakUndoCoalescing {
+            textView.breakUndoCoalescing()
+        }
         // Strip any stray rich-text attributes (bold, different fonts, colours from
         // paste, etc.) while preserving strikethrough and link markers.
         textView.stripFormattingExceptStrikethrough()
