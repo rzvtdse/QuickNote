@@ -226,6 +226,51 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
         isInListMode = true
     }
 
+    /// Converts every non-empty line covered by the current selection into a checklist item.
+    func convertSelectionToList() {
+        guard let storage = textStorage else { return }
+        let sel = selectedRange()
+        let nsStr = storage.string as NSString
+
+        // Expand to full lines
+        let fullLineRange = nsStr.lineRange(for: sel)
+
+        // Collect individual line ranges (walk forward)
+        var lineRanges: [NSRange] = []
+        var pos = fullLineRange.location
+        while pos < NSMaxRange(fullLineRange) {
+            let lr = nsStr.lineRange(for: NSRange(location: pos, length: 0))
+            lineRanges.append(lr)
+            if lr.length == 0 { break }
+            pos = NSMaxRange(lr)
+        }
+
+        let spacer = NSAttributedString(string: " ", attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+            .foregroundColor: NSColor.labelColor,
+        ])
+
+        // Insert checkboxes backwards so earlier indices stay valid
+        storage.beginEditing()
+        for lineRange in lineRanges.reversed() {
+            // Skip blank lines
+            let content = nsStr.substring(with: lineRange)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { continue }
+            // Skip lines that already start with a checkbox
+            if storage.attribute(SectionTextView.checkboxKey,
+                                 at: lineRange.location, effectiveRange: nil) != nil { continue }
+            let insertion = NSMutableAttributedString(
+                attributedString: SectionTextView.checkboxAttrStr(checked: false))
+            insertion.append(spacer)
+            storage.replaceCharacters(in: NSRange(location: lineRange.location, length: 0),
+                                      with: insertion)
+        }
+        storage.endEditing()
+        didChangeText()
+        isInListMode = true
+    }
+
     // MARK: - Strikethrough
 
     func toggleStrikethrough() {
@@ -657,9 +702,15 @@ class SectionsController: NSObject {
                 self.focusedTextView?.toggleStrikethrough()
                 return nil
             }
-            // Cmd+Option+L — start a checklist at the cursor
+            // Cmd+Option+L — start a checklist, or convert selected lines to checklist items
             if flags == [.command, .option], ch == "l" {
-                self.focusedTextView?.activateListMode()
+                if let tv = self.focusedTextView {
+                    if tv.selectedRange().length > 0 {
+                        tv.convertSelectionToList()
+                    } else {
+                        tv.activateListMode()
+                    }
+                }
                 return nil
             }
             // Option+Shift+T — restore last deleted section
