@@ -1496,7 +1496,17 @@ extension SectionCellView: NSTextViewDelegate {
             let sel = textView.selectedRange()
             let str = textView.string as NSString
 
-            if stv?.isInListMode == true {
+            // Check whether the current line starts with a checkbox — this is more
+            // reliable than the section-level isInListMode flag, which can be true
+            // even when the cursor is on a normal line below a list.
+            var lineStart = sel.location
+            while lineStart > 0 && str.character(at: lineStart - 1) != 10 { lineStart -= 1 }
+            let cursorLineHasCheckbox = lineStart < str.length
+                && textView.textStorage?.attribute(SectionTextView.checkboxKey,
+                                                   at: lineStart,
+                                                   effectiveRange: nil) != nil
+
+            if cursorLineHasCheckbox {
                 // Empty list item + Enter → exit list mode
                 // An empty item = cursor is right after "[attachment] " with nothing else on the line.
                 if sel.length == 0, sel.location >= 2 {
@@ -1539,9 +1549,7 @@ extension SectionCellView: NSTextViewDelegate {
                 return true
             }
 
-            // Not in list mode: check if the current line ends with /list
-            var lineStart = sel.location
-            while lineStart > 0 && str.character(at: lineStart - 1) != 10 { lineStart -= 1 }
+            // Not on a checkbox line: check if the current line ends with /list
             let lineText = str.substring(with: NSRange(location: lineStart,
                                                         length: sel.location - lineStart))
             if lineText.hasSuffix("/list") {
