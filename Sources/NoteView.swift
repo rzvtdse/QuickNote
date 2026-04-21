@@ -727,6 +727,14 @@ class SectionsController: NSObject {
                 self.restoreLastDeletedSection()
                 return nil
             }
+            // Cmd+1…9 — switch to nth tab
+            if flags == .command, let ch, let digit = Int(ch), digit >= 1 && digit <= 9 {
+                let idx = digit - 1
+                if idx < self.buckets.count {
+                    self.switchToBucket(self.buckets[idx].id)
+                }
+                return nil
+            }
             // Escape while search is focused
             if event.keyCode == 53, self.searchField.currentEditor() != nil {
                 self.hideSearch()
