@@ -1149,7 +1149,7 @@ class SectionCellView: NSTableCellView {
 
         wantsLayer = true
         layer?.cornerRadius = 5
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
+        layer?.backgroundColor = NSColor(red: 1.0, green: 0.88, blue: 0.60, alpha: 0.04).cgColor
 
         // Header bar — drag handle centred, buttons on the right
         let header = NSView()
@@ -1336,9 +1336,12 @@ class SectionCellView: NSTableCellView {
 
     func focus() { textView?.window?.makeFirstResponder(textView) }
 
+    private static let warmFill = NSColor(red: 1.0, green: 0.88, blue: 0.60, alpha: 1.0)
+
     func setActive(_ active: Bool) {
-        layer?.backgroundColor = NSColor.white
-            .withAlphaComponent(active ? 0.18 : 0.06).cgColor
+        layer?.backgroundColor = active
+            ? NSColor.white.withAlphaComponent(0.18).cgColor
+            : SectionCellView.warmFill.withAlphaComponent(0.04).cgColor
         layer?.borderColor = active
             ? NSColor.white.withAlphaComponent(0.22).cgColor
             : NSColor.clear.cgColor
@@ -1362,7 +1365,7 @@ class SectionCellView: NSTableCellView {
 
     override func mouseExited(with event: NSEvent) {
         guard layer?.borderWidth == 0 else { return }
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
+        layer?.backgroundColor = SectionCellView.warmFill.withAlphaComponent(0.04).cgColor
     }
 
     func setSelected(_ selected: Bool) {
@@ -1825,25 +1828,26 @@ class BucketTabView: NSView, NSTextViewDelegate {
     // MARK: Styling — layer-based, no custom drawing
 
     private func updateStyling() {
-        let alpha: CGFloat
+        let warmFill = NSColor(red: 1.0, green: 0.88, blue: 0.60, alpha: 1.0)
         if isActive {
-            alpha = 0.18
             label.textColor = .white
             label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+            layer?.backgroundColor = NSColor.white.withAlphaComponent(0.18).cgColor
             layer?.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
             layer?.borderWidth = 1
         } else if isHovered {
-            alpha = 0.09
             label.textColor = NSColor.white.withAlphaComponent(0.75)
             label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-            layer?.borderWidth = 0
+            layer?.backgroundColor = NSColor.white.withAlphaComponent(0.09).cgColor
+            layer?.borderColor = NSColor.white.withAlphaComponent(0.15).cgColor
+            layer?.borderWidth = 1
         } else {
-            alpha = 0
             label.textColor = NSColor.white.withAlphaComponent(0.55)
             label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-            layer?.borderWidth = 0
+            layer?.backgroundColor = warmFill.withAlphaComponent(0.04).cgColor
+            layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+            layer?.borderWidth = 1
         }
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(alpha).cgColor
         closeButton.alphaValue = (isHovered || isActive) ? 1.0 : 0.0
     }
 
