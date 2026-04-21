@@ -14,19 +14,29 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
 
     private var isProcessingLinks = false
     fileprivate static let linkKey     = NSAttributedString.Key("QNLink")
+    private static let linkDetector: NSDataDetector? = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
     fileprivate static let toggleKey   = NSAttributedString.Key("QNToggle")
     fileprivate static let hiddenKey   = NSAttributedString.Key("QNHidden")
     fileprivate static let checkboxKey = NSAttributedString.Key("QNCheckbox")
 
+    private static let uncheckedImage: NSImage? = {
+        let base = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        let color = NSImage.SymbolConfiguration(hierarchicalColor: NSColor.white.withAlphaComponent(0.4))
+        return NSImage(systemSymbolName: "circle", accessibilityDescription: nil)?
+            .withSymbolConfiguration(base.applying(color))
+    }()
+
+    private static let checkedImage: NSImage? = {
+        let base = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        let color = NSImage.SymbolConfiguration(hierarchicalColor: NSColor.white)
+        return NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(base.applying(color))
+    }()
+
     /// Builds an NSAttributedString containing a single SF-Symbol checkbox attachment.
     static func checkboxAttrStr(checked: Bool) -> NSAttributedString {
         let attachment = NSTextAttachment()
-        let symbolName = checked ? "checkmark.circle.fill" : "circle"
-        let baseConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
-        let colorConfig = NSImage.SymbolConfiguration(
-            hierarchicalColor: checked ? NSColor.white : NSColor.white.withAlphaComponent(0.4))
-        attachment.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
-            .withSymbolConfiguration(baseConfig.applying(colorConfig))
+        attachment.image = checked ? checkedImage : uncheckedImage
         // y offset nudges the icon to sit on the text baseline nicely
         attachment.bounds = CGRect(x: 0, y: -2.5, width: 14, height: 14)
         let str = NSMutableAttributedString(attachment: attachment)
@@ -273,7 +283,7 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
 
         let text = string
         guard !text.isEmpty,
-              let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+              let detector = SectionTextView.linkDetector
         else { return }
 
         let fullRange = NSRange(location: 0, length: (text as NSString).length)
@@ -335,6 +345,20 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
         layoutManager?.invalidateLayout(forCharacterRange: linkRange,
                                         actualCharacterRange: nil)
         layoutManager?.invalidateDisplay(forCharacterRange: linkRange)
+    }
+
+    // MARK: - Rich Content Check
+
+    func hasRichContent() -> Bool {
+        guard let storage = textStorage, storage.length > 0 else { return false }
+        var found = false
+        storage.enumerateAttributes(in: NSRange(location: 0, length: storage.length), options: .longestEffectiveRangeNotRequired) { attrs, _, stop in
+            if attrs[SectionTextView.checkboxKey] != nil || attrs[.strikethroughStyle] != nil {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
     }
 
     // MARK: - Mouse
@@ -454,6 +478,7 @@ class SectionsController: NSObject {
     private var mergeButton: NSButton!
     private var undoSectionButton: NSButton!
     private var undoSectionTimer: Timer?
+    private var frameChangeDebounce: Timer?
     private var searchField: NSSearchField!
     private var searchHeightConstraint: NSLayoutConstraint!
     private var bucketBar: BucketBarView!
@@ -463,6 +488,7 @@ class SectionsController: NSObject {
     private var eventMonitor: Any?
     private var keyMonitor: Any?
     private var lastKnownTableWidth: CGFloat = 0
+    private var searchDebounce: Timer?
     private weak var focusedTextView: SectionTextView?
 
     private static let pbType = NSPasteboard.PasteboardType("com.quicknote.section")
@@ -695,12 +721,16 @@ class SectionsController: NSObject {
         focusLastSection()
     }
 
-    @objc private func tableFrameChanged() {
-        let w = tableView.bounds.width
-        guard abs(w - lastKnownTableWidth) > 0.5, w > 0 else { return }
-        lastKnownTableWidth = w
-        tableView.noteHeightOfRows(withIndexesChanged:
-            IndexSet(integersIn: 0..<tableView.numberOfRows))
+    @objc func tableFrameChanged() {
+        frameChangeDebounce?.invalidate()
+        frameChangeDebounce = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0
+                self.tableView.noteHeightOfRows(withIndexesChanged:
+                    IndexSet(integersIn: 0..<self.tableView.numberOfRows))
+            }
+        }
     }
 
     // MARK: Selection
@@ -1032,7 +1062,7 @@ class SectionsController: NSObject {
         let lastId = UserDefaults.standard.string(forKey: perBucketKey)
             ?? UserDefaults.standard.string(forKey: "qn_last_section")
         let target = lastId.flatMap { id in filteredSections.firstIndex(where: { $0.id == id }) }
-        let row = target ?? filteredSections.count - 1
+        let row = target ?? (filteredSections.isEmpty ? 0 : filteredSections.count - 1)
         guard row >= 0 else { return }
         tableView.scrollRowToVisible(row)
         (tableView.view(atColumn: 0, row: row, makeIfNecessary: true) as? SectionCellView)?.focus()
@@ -1098,7 +1128,7 @@ extension SectionsController: NSTableViewDataSource, NSTableViewDelegate {
         let targetGlobal: Int
         if row >= filtered.count {
             // Dropped after last filtered row; insert after last section in this bucket
-            targetGlobal = (sections.lastIndex(where: { $0.bucketId == activeBucketId }) ?? sections.count - 1) + 1
+            targetGlobal = (sections.lastIndex(where: { $0.bucketId == activeBucketId }) ?? (sections.isEmpty ? 0 : sections.count - 1)) + 1
         } else {
             let anchorId = filtered[row].id
             targetGlobal = sections.firstIndex(where: { $0.id == anchorId }) ?? sections.count
@@ -1116,8 +1146,12 @@ extension SectionsController: NSTableViewDataSource, NSTableViewDelegate {
 
 extension SectionsController: NSSearchFieldDelegate {
     func controlTextDidChange(_ obj: Notification) {
-        searchQuery = (obj.object as? NSSearchField)?.stringValue ?? ""
-        tableView.reloadData()
+        guard let field = obj.object as? NSSearchField else { return }
+        searchQuery = field.stringValue
+        searchDebounce?.invalidate()
+        searchDebounce = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: false) { [weak self] _ in
+            self?.tableView.reloadData()
+        }
     }
 }
 
@@ -1517,7 +1551,7 @@ extension SectionCellView: NSTextViewDelegate {
         textView.typingAttributes = ta
         textView.processLinks()
         let len = textView.textStorage?.length ?? 0
-        let rtf = len > 0 ? textView.rtfDataForStorage() : nil
+        let rtf = len > 0 ? (textView.hasRichContent() ? textView.rtfDataForStorage() : nil) : nil
         ctrl?.update(id: sectionId, content: textView.string, rtfData: rtf)
         ctrl?.refreshRowHeight(for: self)
     }

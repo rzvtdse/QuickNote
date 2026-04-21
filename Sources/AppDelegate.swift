@@ -79,9 +79,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.hasShadow = true
         panel.delegate = self
         panel.minSize = CGSize(width: 300, height: 220)
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
-        panel.standardWindowButton(.closeButton)?.isHidden = true
+        [NSWindow.ButtonType.miniaturizeButton, .zoomButton, .closeButton].forEach {
+            panel.standardWindowButton($0)?.isHidden = true
+        }
 
         // Remember window size & position across launches
         panel.setFrameAutosaveName("QuickNotePanel")
@@ -136,6 +136,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc func hidePanel() { panel.orderOut(nil) }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let ref = eventHandlerRef { RemoveEventHandler(ref) }
+        if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
+    }
 
     func windowDidResignKey(_ notification: Notification) { hidePanel() }
 
