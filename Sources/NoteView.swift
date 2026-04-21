@@ -208,7 +208,6 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
     // MARK: - List mode
 
     func activateListMode() {
-        guard !isInListMode else { return }
         guard let storage = textStorage else { return }
         let range = selectedRange()
         let insertion = NSMutableAttributedString(
@@ -1601,6 +1600,17 @@ extension SectionCellView: NSTextViewDelegate {
         ta[.foregroundColor] = NSColor.labelColor
         textView.typingAttributes = ta
         textView.processLinks()
+        // Keep isInListMode in sync with actual checkbox presence so that
+        // deleting all checkboxes stops Enter from adding new ones.
+        if let storage = textView.textStorage {
+            var hasCheckbox = false
+            storage.enumerateAttribute(SectionTextView.checkboxKey,
+                                       in: NSRange(location: 0, length: storage.length),
+                                       options: .longestEffectiveRangeNotRequired) { val, _, stop in
+                if val != nil { hasCheckbox = true; stop.pointee = true }
+            }
+            (textView as SectionTextView).isInListMode = hasCheckbox
+        }
         let len = textView.textStorage?.length ?? 0
         let rtf = len > 0 ? (textView.hasRichContent() ? textView.rtfDataForStorage() : nil) : nil
         ctrl?.update(id: sectionId, content: textView.string, rtfData: rtf)
