@@ -231,6 +231,10 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
         let sel = selectedRange()
         let nsStr = storage.string as NSString
 
+        // Snapshot before change so Cmd+Z can restore it
+        let snapshot = storage.copy() as! NSAttributedString
+        let snapshotSel = sel
+
         // Expand to full lines
         let fullLineRange = nsStr.lineRange(for: sel)
 
@@ -268,6 +272,18 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
         storage.endEditing()
         didChangeText()
         isInListMode = true
+
+        // Register undo: restore snapshot and selection
+        undoManager?.registerUndo(withTarget: self) { [weak self] _ in
+            guard let self, let storage = self.textStorage else { return }
+            storage.beginEditing()
+            storage.setAttributedString(snapshot)
+            storage.endEditing()
+            self.setSelectedRange(snapshotSel)
+            self.didChangeText()
+            self.isInListMode = false
+        }
+        undoManager?.setActionName("Convert to List")
     }
 
     // MARK: - Strikethrough
