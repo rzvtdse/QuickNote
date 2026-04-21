@@ -1586,6 +1586,14 @@ class BucketBarView: NSView {
         let mouseX = convert(event.locationInWindow, from: nil).x
         guard let currentIndex = tabs.firstIndex(of: tab) else { return }
 
+        // Compute the tab width as layout() would
+        let n = CGFloat(tabs.count)
+        let tabWidth = min(maxTabWidth, max(40, (bounds.width - spacing * (n - 1)) / n))
+
+        // Move the dragged tab to follow the cursor
+        let dragX = max(0, min(mouseX - tabWidth / 2, bounds.width - tabWidth))
+        tab.frame = CGRect(x: dragX, y: 0, width: tabWidth, height: bounds.height)
+
         // Count how many OTHER tabs have their midX left of the mouse → insert after them
         var targetIndex = 0
         for t in tabs where t !== tab {
@@ -1596,7 +1604,7 @@ class BucketBarView: NSView {
 
         tabs.remove(at: currentIndex)
         tabs.insert(tab, at: targetIndex)
-        layout()
+        layout()   // repositions the non-dragged tabs; dragged tab frame set above
     }
 
     private func commitDrag(tab: BucketTabView) {
