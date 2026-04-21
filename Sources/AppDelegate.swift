@@ -112,7 +112,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let overlay = NSView(frame: contentView.bounds)
         overlay.autoresizingMask = [.width, .height]
         overlay.wantsLayer = true
-        overlay.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
+        overlay.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.15).cgColor
         fx.addSubview(overlay)
 
         sectionsController = SectionsController()
