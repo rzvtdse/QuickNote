@@ -854,17 +854,17 @@ class SectionsController: NSObject {
     func refreshRowHeight(for view: NSView) {
         let row = tableView.row(for: view)
         guard row >= 0 else { return }
-        tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
-    }
-
-    /// Preferred variant: looks up the row directly from the data model so it
-    /// never fails even if the cell view is not yet fully embedded in the table
-    /// hierarchy (e.g. during the first configure pass).
-    func refreshRowHeightForSection(id: String) {
-        guard let row = filteredSections.firstIndex(where: { $0.id == id }) else { return }
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0
             self.tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
+        }
+    }
+
+    func refreshRowHeightForSection(id: String) {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0
+            self.tableView.noteHeightOfRows(withIndexesChanged:
+                IndexSet(integersIn: 0..<self.tableView.numberOfRows))
         }
     }
 
@@ -1208,47 +1208,40 @@ class SectionCellView: NSTableCellView {
             .backgroundColor: NSColor.controlAccentColor.withAlphaComponent(0.25),
             .foregroundColor: NSColor.labelColor,
         ]
-        // Load content — three cases:
-        //   Old format : content has U+FFFC (raw attachment chars); RTF has TIFF attachments
-        //                with no QNCheckbox attribute.  Re-mark them as unchecked SF Symbols
-        //                and auto-migrate to the new format.
-        //   New format : content has ☐/☑; RTF stores those same chars as text (plus
-        //                strikethrough).  Load RTF then convert ☐/☑ to SF Symbol attachments.
-        //   Plain text : no checkboxes.  Load RTF if present (for strikethrough), else string.
-        let hasOldFormat = section.content.contains("\u{FFFC}")
-        let hasNewFormat = !hasOldFormat &&
-            (section.content.contains("☐") || section.content.contains("☑"))
-
-        if hasOldFormat, let rtf = section.rtfData,
+        // Load content. We detect the format by inspecting the *loaded RTF text*, not content.
+        // content always stores textView.string (U+FFFC for attachments); rtfData tells us the format:
+        //   • RTF text has ☐/☑  → new format: convert ☐/☑ back to SF Symbol attachments
+        //   • RTF text has U+FFFC → old format: TIFF attachments, re-mark as unchecked SF Symbols
+        //   • RTF has neither    → plain text (strikethrough only)
+        //   • no rtfData         → fall back to plain content string
+        if let rtf = section.rtfData,
            let attrStr = NSAttributedString(rtf: rtf, documentAttributes: nil) {
-            // Old format: RTF contains raw TIFF attachments; re-mark them as unchecked.
-            textView.textStorage?.setAttributedString(attrStr)
-            textView.reMarkCheckboxAttachments()
-            textView.isInListMode = true
-            // Auto-migrate to new format so next launch uses the correct paths.
-            let sid = section.id
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.ctrl?.update(id: sid,
-                                  content: self.textView.plainTextForStorage(),
-                                  rtfData: self.textView.rtfDataForStorage())
-            }
-        } else if hasNewFormat {
-            // New format: RTF stores ☐/☑ as text; load it then replace with SF Symbols.
-            if let rtf = section.rtfData,
-               let attrStr = NSAttributedString(rtf: rtf, documentAttributes: nil) {
+            let loadedText = attrStr.string
+            if loadedText.contains("☐") || loadedText.contains("☑") {
+                // New format: RTF encodes checkboxes as ☐/☑ text → restore SF Symbol attachments
                 textView.textStorage?.setAttributedString(attrStr)
+                textView.convertTextCheckboxesToAttachments()
+                textView.isInListMode = true
+            } else if loadedText.contains("\u{FFFC}") {
+                // Old format: RTF has raw TIFF attachments → replace with unchecked SF Symbols
+                textView.textStorage?.setAttributedString(attrStr)
+                textView.reMarkCheckboxAttachments()
+                textView.isInListMode = true
+                // Auto-migrate: resave with new RTF format so next launch is instant
+                let sid = section.id
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    self.ctrl?.update(id: sid,
+                                      content: self.textView.string,
+                                      rtfData: self.textView.rtfDataForStorage())
+                }
             } else {
-                textView.string = section.content
+                // Plain text (e.g. strikethrough) — no checkboxes
+                textView.textStorage?.setAttributedString(attrStr)
+                textView.isInListMode = false
             }
-            textView.convertTextCheckboxesToAttachments()
-            textView.isInListMode = true
-        } else if let rtf = section.rtfData,
-                  let attrStr = NSAttributedString(rtf: rtf, documentAttributes: nil) {
-            // Plain text with possible strikethrough — load from RTF.
-            textView.textStorage?.setAttributedString(attrStr)
-            textView.isInListMode = false
         } else {
+            // No saved RTF — load from plain content string
             textView.string = section.content
             textView.isInListMode = false
         }
@@ -1276,9 +1269,8 @@ class SectionCellView: NSTableCellView {
         // Persist after a direct storage change (e.g. strikethrough toggle, checkbox click)
         textView.onTextStorageChanged = { [weak self] in
             guard let self = self else { return }
-            self.ctrl?.update(id: self.sectionId,
-                              content: self.textView.plainTextForStorage(),
-                              rtfData: self.textView.rtfDataForStorage())
+            let rtf = self.textView.rtfDataForStorage()
+            self.ctrl?.update(id: self.sectionId, content: self.textView.string, rtfData: rtf)
         }
         addSubview(textView)
 
@@ -1508,10 +1500,10 @@ extension SectionCellView: NSTextViewDelegate {
         ta[.foregroundColor] = NSColor.labelColor
         textView.typingAttributes = ta
         textView.processLinks()
-        ctrl?.update(id: sectionId,
-                     content: textView.plainTextForStorage(),
-                     rtfData: textView.rtfDataForStorage())
-        ctrl?.refreshRowHeightForSection(id: sectionId)
+        let len = textView.textStorage?.length ?? 0
+        let rtf = len > 0 ? textView.rtfDataForStorage() : nil
+        ctrl?.update(id: sectionId, content: textView.string, rtfData: rtf)
+        ctrl?.refreshRowHeight(for: self)
     }
 
     func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange,
