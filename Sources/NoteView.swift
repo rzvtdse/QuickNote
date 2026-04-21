@@ -1600,16 +1600,18 @@ extension SectionCellView: NSTextViewDelegate {
         ta[.foregroundColor] = NSColor.labelColor
         textView.typingAttributes = ta
         textView.processLinks()
-        // Keep isInListMode in sync with actual checkbox presence so that
-        // deleting all checkboxes stops Enter from adding new ones.
-        if let storage = textView.textStorage {
+        // Auto-reset isInListMode only when all checkboxes have been deleted,
+        // so Enter stops adding new items. Never flip false→true here — that
+        // only happens via explicit activation (Cmd+Option+L or /list).
+        let stv = textView as SectionTextView
+        if stv.isInListMode, let storage = stv.textStorage {
             var hasCheckbox = false
             storage.enumerateAttribute(SectionTextView.checkboxKey,
                                        in: NSRange(location: 0, length: storage.length),
                                        options: .longestEffectiveRangeNotRequired) { val, _, stop in
                 if val != nil { hasCheckbox = true; stop.pointee = true }
             }
-            (textView as SectionTextView).isInListMode = hasCheckbox
+            if !hasCheckbox { stv.isInListMode = false }
         }
         let len = textView.textStorage?.length ?? 0
         let rtf = len > 0 ? (textView.hasRichContent() ? textView.rtfDataForStorage() : nil) : nil
