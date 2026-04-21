@@ -600,6 +600,10 @@ class SectionsController: NSObject {
             bottomStack.heightAnchor.constraint(equalToConstant: 28),
         ])
 
+        bucketBar.onReorder = { [weak self] from, to in
+            self?.reorderBucket(from: from, to: to)
+        }
+
         rebuildBucketBar()
 
         // Cmd+F to reveal search, Esc to dismiss it, Cmd+Shift+T to restore deleted bucket
@@ -907,6 +911,15 @@ class SectionsController: NSObject {
             tabs.append(tab)
         }
         bucketBar.setTabs(tabs)
+    }
+
+    private func reorderBucket(from fromIndex: Int, to toIndex: Int) {
+        guard fromIndex != toIndex,
+              fromIndex < buckets.count,
+              toIndex < buckets.count else { return }
+        let moved = buckets.remove(at: fromIndex)
+        buckets.insert(moved, at: toIndex)
+        save()
     }
 
     private func renameBucket(id: String, to newName: String) {
@@ -1539,11 +1552,59 @@ class BucketBarView: NSView {
     var spacing: CGFloat = 4
     var maxTabWidth: CGFloat = 160
 
+    /// Called with (originalIndex, finalIndex) when the user finishes dragging a tab.
+    var onReorder: ((Int, Int) -> Void)?
+
+    private var draggingTab: BucketTabView?
+    private var draggingOriginalIndex = 0
+
     func setTabs(_ newTabs: [BucketTabView]) {
         tabs.forEach { $0.removeFromSuperview() }
         tabs = newTabs
-        tabs.forEach { addSubview($0) }
+        tabs.forEach { tab in
+            addSubview(tab)
+            tab.onDragMoved = { [weak self, weak tab] event in
+                guard let self, let tab else { return }
+                self.handleDrag(tab: tab, event: event)
+            }
+            tab.onDragEnded = { [weak self, weak tab] in
+                guard let self, let tab else { return }
+                self.commitDrag(tab: tab)
+            }
+        }
         needsLayout = true
+    }
+
+    private func handleDrag(tab: BucketTabView, event: NSEvent) {
+        if draggingTab == nil {
+            draggingTab = tab
+            draggingOriginalIndex = tabs.firstIndex(of: tab) ?? 0
+            tab.layer?.opacity = 0.7
+            addSubview(tab)         // bring to front
+        }
+
+        let mouseX = convert(event.locationInWindow, from: nil).x
+        guard let currentIndex = tabs.firstIndex(of: tab) else { return }
+
+        // Count how many OTHER tabs have their midX left of the mouse → insert after them
+        var targetIndex = 0
+        for t in tabs where t !== tab {
+            if t.frame.midX < mouseX { targetIndex += 1 }
+        }
+        targetIndex = min(max(targetIndex, 0), tabs.count - 1)
+        guard targetIndex != currentIndex else { return }
+
+        tabs.remove(at: currentIndex)
+        tabs.insert(tab, at: targetIndex)
+        layout()
+    }
+
+    private func commitDrag(tab: BucketTabView) {
+        tab.layer?.opacity = 1
+        if let finalIndex = tabs.firstIndex(of: tab), finalIndex != draggingOriginalIndex {
+            onReorder?(draggingOriginalIndex, finalIndex)
+        }
+        draggingTab = nil
     }
 
     override func layout() {
@@ -1554,7 +1615,10 @@ class BucketBarView: NSView {
         let tabWidth = min(maxTabWidth, max(40, (bounds.width - totalSpacing) / n))
         var x: CGFloat = 0
         for tab in tabs {
-            tab.frame = CGRect(x: x, y: 0, width: tabWidth, height: bounds.height)
+            // Don't reposition the tab being dragged — let the drag handle its frame
+            if tab !== draggingTab {
+                tab.frame = CGRect(x: x, y: 0, width: tabWidth, height: bounds.height)
+            }
             x += tabWidth + spacing
         }
     }
@@ -1579,6 +1643,9 @@ class BucketTabView: NSView, NSTextViewDelegate {
     var onRename: ((String) -> Void)?
     var onRequestDelete: (() -> Void)?
     var onDidEndEditing: (() -> Void)?
+    var onDragMoved: ((NSEvent) -> Void)?
+    var onDragEnded: (() -> Void)?
+    private var hasDragged = false
 
     private let label = NSTextField(labelWithString: "")
     private let editView = NSTextView()            // NSTextView handles its own key events
@@ -1697,15 +1764,29 @@ class BucketTabView: NSView, NSTextViewDelegate {
         updateStyling()
     }
 
-    // MARK: Click / double-click
+    // MARK: Click / double-click / drag
 
     override func mouseDown(with event: NSEvent) {
+        hasDragged = false
         // If we're already editing, pass through so NSTextView handles the click
         if !editContainer.isHidden { super.mouseDown(with: event); return }
         if event.clickCount >= 2 {
             beginEditing()
         } else {
             onClick?()
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard editContainer.isHidden else { return }
+        hasDragged = true
+        onDragMoved?(event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if hasDragged {
+            onDragEnded?()
+            hasDragged = false
         }
     }
 
