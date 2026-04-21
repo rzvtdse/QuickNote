@@ -46,21 +46,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         guard let button = statusItem.button else { return }
-        let img = NSImage(size: NSSize(width: 20, height: 20), flipped: false) { rect in
-            let circle = NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1))
-            NSColor.black.withAlphaComponent(0.45).setFill()
-            circle.fill()
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont(name: "Copperplate", size: 12) ?? NSFont.systemFont(ofSize: 12),
-                .foregroundColor: NSColor.white,
-            ]
-            let str = NSAttributedString(string: "N", attributes: attrs)
-            let sz = str.size()
-            str.draw(at: CGPoint(x: (rect.width - sz.width) / 2, y: (rect.height - sz.height) / 2))
-            return true
+        if let img = Bundle.main.image(forResource: "menubar_icon") {
+            img.size = NSSize(width: 18, height: 18)
+            img.isTemplate = true   // lets macOS tint it for light/dark menu bar
+            button.image = img
         }
-        img.isTemplate = false
-        button.image = img
         button.action = #selector(togglePanel)
         button.target = self
     }
