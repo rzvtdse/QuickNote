@@ -1383,14 +1383,6 @@ class SectionCellView: NSTableCellView {
         header.translatesAutoresizingMaskIntoConstraints = false
         addSubview(header)
 
-        // Drag handle — three dots using SF Symbol
-        let handleImg = NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Drag")
-        let handle = NSImageView(image: handleImg ?? NSImage())
-        handle.translatesAutoresizingMaskIntoConstraints = false
-        handle.contentTintColor = NSColor.tertiaryLabelColor
-        handle.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular)
-        header.addSubview(handle)
-
         // Word / character count — shown on hover
         let count = NSTextField(labelWithString: "")
         count.translatesAutoresizingMaskIntoConstraints = false
@@ -1545,9 +1537,6 @@ class SectionCellView: NSTableCellView {
             header.leadingAnchor.constraint(equalTo: leadingAnchor),
             header.trailingAnchor.constraint(equalTo: trailingAnchor),
             header.heightAnchor.constraint(equalToConstant: SectionCellView.headerH),
-
-            handle.centerXAnchor.constraint(equalTo: header.centerXAnchor),
-            handle.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
             count.centerXAnchor.constraint(equalTo: header.centerXAnchor),
             count.centerYAnchor.constraint(equalTo: header.centerYAnchor),
