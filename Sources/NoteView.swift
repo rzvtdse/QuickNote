@@ -580,14 +580,26 @@ class SectionsController: NSObject {
         bucketBar.translatesAutoresizingMaskIntoConstraints = false
         parent.addSubview(bucketBar)
 
-        // + button sits to the right of the tab bar, fixed size
-        let addTabBtn = NSButton(title: "+", target: self, action: #selector(addBucket))
-        addTabBtn.translatesAutoresizingMaskIntoConstraints = false
-        addTabBtn.isBordered = false
-        addTabBtn.bezelStyle = .inline
-        addTabBtn.font = NSFont.systemFont(ofSize: 16, weight: .light)
-        addTabBtn.contentTintColor = NSColor.white.withAlphaComponent(0.45)
-        parent.addSubview(addTabBtn)
+        // Export / Import icon buttons — top-right corner, icon-only
+        let exportBtn = NSButton(title: "", target: self, action: #selector(exportNotes))
+        exportBtn.translatesAutoresizingMaskIntoConstraints = false
+        exportBtn.isBordered = false
+        exportBtn.bezelStyle = .inline
+        exportBtn.image = NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: "Export")
+        exportBtn.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+        exportBtn.contentTintColor = NSColor.white.withAlphaComponent(0.40)
+        exportBtn.toolTip = "Export notes"
+        parent.addSubview(exportBtn)
+
+        let importBtn = NSButton(title: "", target: self, action: #selector(importNotes))
+        importBtn.translatesAutoresizingMaskIntoConstraints = false
+        importBtn.isBordered = false
+        importBtn.bezelStyle = .inline
+        importBtn.image = NSImage(systemSymbolName: "square.and.arrow.down", accessibilityDescription: "Import")
+        importBtn.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+        importBtn.contentTintColor = NSColor.white.withAlphaComponent(0.40)
+        importBtn.toolTip = "Import notes"
+        parent.addSubview(importBtn)
 
         // Search field (hidden until Cmd+F)
         searchField = NSSearchField()
@@ -661,25 +673,7 @@ class SectionsController: NSObject {
         undoSectionButton.contentTintColor = NSColor.controlAccentColor
         undoSectionButton.isHidden = true
 
-        let exportBtn = NSButton(title: "Export", target: self, action: #selector(exportNotes))
-        exportBtn.translatesAutoresizingMaskIntoConstraints = false
-        exportBtn.isBordered = false
-        exportBtn.bezelStyle = .inline
-        exportBtn.image = NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: nil)
-        exportBtn.imagePosition = .imageLeading
-        exportBtn.font = NSFont.systemFont(ofSize: 12, weight: .regular)
-        exportBtn.contentTintColor = NSColor.secondaryLabelColor
-
-        let importBtn = NSButton(title: "Import", target: self, action: #selector(importNotes))
-        importBtn.translatesAutoresizingMaskIntoConstraints = false
-        importBtn.isBordered = false
-        importBtn.bezelStyle = .inline
-        importBtn.image = NSImage(systemSymbolName: "square.and.arrow.down", accessibilityDescription: nil)
-        importBtn.imagePosition = .imageLeading
-        importBtn.font = NSFont.systemFont(ofSize: 12, weight: .regular)
-        importBtn.contentTintColor = NSColor.secondaryLabelColor
-
-        let bottomStack = NSStackView(views: [addBtn, mergeButton, undoSectionButton, exportBtn, importBtn])
+        let bottomStack = NSStackView(views: [addBtn, mergeButton, undoSectionButton])
         bottomStack.translatesAutoresizingMaskIntoConstraints = false
         bottomStack.orientation = .horizontal
         bottomStack.spacing = 16
@@ -688,14 +682,19 @@ class SectionsController: NSObject {
 
         searchHeightConstraint = searchField.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
-            addTabBtn.centerYAnchor.constraint(equalTo: bucketBar.centerYAnchor),
-            addTabBtn.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -8),
-            addTabBtn.widthAnchor.constraint(equalToConstant: 24),
-            addTabBtn.heightAnchor.constraint(equalToConstant: 24),
+            importBtn.centerYAnchor.constraint(equalTo: bucketBar.centerYAnchor),
+            importBtn.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -8),
+            importBtn.widthAnchor.constraint(equalToConstant: 20),
+            importBtn.heightAnchor.constraint(equalToConstant: 20),
+
+            exportBtn.centerYAnchor.constraint(equalTo: bucketBar.centerYAnchor),
+            exportBtn.trailingAnchor.constraint(equalTo: importBtn.leadingAnchor, constant: -6),
+            exportBtn.widthAnchor.constraint(equalToConstant: 20),
+            exportBtn.heightAnchor.constraint(equalToConstant: 20),
 
             bucketBar.topAnchor.constraint(equalTo: parent.topAnchor, constant: 18),
             bucketBar.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 8),
-            bucketBar.trailingAnchor.constraint(equalTo: addTabBtn.leadingAnchor, constant: -4),
+            bucketBar.trailingAnchor.constraint(equalTo: exportBtn.leadingAnchor, constant: -6),
             bucketBar.heightAnchor.constraint(equalToConstant: 28),
 
             searchField.topAnchor.constraint(equalTo: bucketBar.bottomAnchor, constant: 0),
@@ -716,6 +715,7 @@ class SectionsController: NSObject {
         bucketBar.onReorder = { [weak self] from, to in
             self?.reorderBucket(from: from, to: to)
         }
+        bucketBar.onAddTab = { [weak self] in self?.addBucket() }
 
         rebuildBucketBar()
 
@@ -1805,14 +1805,40 @@ class BucketBarView: NSView {
 
     /// Called with (originalIndex, finalIndex) when the user finishes dragging a tab.
     var onReorder: ((Int, Int) -> Void)?
+    var onAddTab: (() -> Void)?
 
     private var draggingTab: BucketTabView?
     private var draggingOriginalIndex = 0
 
+    // The + button lives inside the bar and moves with the tabs
+    private let addButton: NSButton = {
+        let btn = NSButton()
+        btn.title = "+"
+        btn.isBordered = false
+        btn.bezelStyle = .inline
+        btn.font = NSFont.systemFont(ofSize: 16, weight: .light)
+        btn.contentTintColor = NSColor.white.withAlphaComponent(0.45)
+        btn.wantsLayer = true
+        return btn
+    }()
+
+    private let addButtonWidth: CGFloat = 24
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        addSubview(addButton)
+        addButton.target = self
+        addButton.action = #selector(addTabTapped)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    @objc private func addTabTapped() { onAddTab?() }
+
     private func tabWidth(forCount count: Int) -> CGFloat {
         let n = CGFloat(max(1, count))
         let totalSpacing = spacing * (n - 1)
-        return min(maxTabWidth, max(40, (bounds.width - totalSpacing) / n))
+        let available = bounds.width - addButtonWidth - spacing
+        return min(maxTabWidth, max(40, (available - totalSpacing) / n))
     }
 
     func setTabs(_ newTabs: [BucketTabView]) {
@@ -1899,11 +1925,14 @@ class BucketBarView: NSView {
 
     override func layout() {
         super.layout()
-        guard !tabs.isEmpty else { return }
         let tw = tabWidth(forCount: tabs.count)
         for (i, tab) in tabs.enumerated() where tab !== draggingTab {
             tab.frame = CGRect(x: CGFloat(i) * (tw + spacing), y: 0, width: tw, height: bounds.height)
         }
+        // + button sits right after the last tab
+        let tabsEndX = tabs.isEmpty ? 0 : CGFloat(tabs.count) * (tw + spacing) - spacing + spacing
+        let btnY = (bounds.height - addButtonWidth) / 2
+        addButton.frame = CGRect(x: tabsEndX, y: btnY, width: addButtonWidth, height: addButtonWidth)
     }
 
     override var mouseDownCanMoveWindow: Bool { false }
