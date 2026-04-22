@@ -545,7 +545,7 @@ class SectionsController: NSObject {
     private var searchDebounce: Timer?
     private weak var focusedTextView: SectionTextView?
 
-    private static let pbType = NSPasteboard.PasteboardType("com.quicknote.section")
+    static let pbType = NSPasteboard.PasteboardType("com.quicknote.section")
 
     /// Sections in the active bucket, further filtered by search query.
     private var filteredSections: [NoteSection] {
@@ -1006,6 +1006,15 @@ class SectionsController: NSObject {
             tab.onRename = { [weak self] newName in self?.renameBucket(id: b.id, to: newName) }
             tab.onRequestDelete = { [weak self] in self?.deleteBucket(id: b.id) }
             tab.onDidEndEditing = { [weak self] in self?.focusLastSection() }
+            tab.onReceiveDrop = { [weak self] sectionId in
+                guard let self,
+                      let idx = self.sections.firstIndex(where: { $0.id == sectionId }),
+                      self.sections[idx].bucketId != b.id else { return false }
+                self.sections[idx].bucketId = b.id
+                self.save()
+                self.switchToBucket(b.id)
+                return true
+            }
             tabs.append(tab)
         }
         bucketBar.setTabs(tabs)
@@ -1805,6 +1814,8 @@ class BucketTabView: NSView, NSTextViewDelegate {
     var onDidEndEditing: (() -> Void)?
     var onDragMoved: ((NSEvent) -> Void)?
     var onDragEnded: (() -> Void)?
+    /// Called when a section is dropped onto this tab. Return true if accepted.
+    var onReceiveDrop: ((String) -> Bool)?
     private var hasDragged = false
 
     private let label = NSTextField(labelWithString: "")
@@ -1891,6 +1902,7 @@ class BucketTabView: NSView, NSTextViewDelegate {
         ])
 
         updateStyling()
+        registerForDraggedTypes([SectionsController.pbType])
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -1922,6 +1934,31 @@ class BucketTabView: NSView, NSTextViewDelegate {
     override func mouseExited(with event: NSEvent) {
         isHovered = false
         updateStyling()
+    }
+
+    // MARK: Drag destination (receive section drops)
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !isActive,
+              sender.draggingPasteboard.availableType(from: [SectionsController.pbType]) != nil
+        else { return [] }
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.30).cgColor
+        return .move
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !isActive else { return [] }
+        return .move
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        updateStyling()
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        updateStyling()
+        guard let sectionId = sender.draggingPasteboard.string(forType: SectionsController.pbType) else { return false }
+        return onReceiveDrop?(sectionId) ?? false
     }
 
     // MARK: Click / double-click / drag
