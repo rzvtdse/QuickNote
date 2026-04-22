@@ -1353,6 +1353,8 @@ class SectionCellView: NSTableCellView {
     private var textView: SectionTextView!
     private var sectionId = ""
     private weak var ctrl: SectionsController?
+    private var countLabel: NSTextField?
+    private var isHovered = false
 
     static let headerH: CGFloat = 22
     static let minH: CGFloat = 72
@@ -1388,6 +1390,16 @@ class SectionCellView: NSTableCellView {
         handle.contentTintColor = NSColor.tertiaryLabelColor
         handle.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular)
         header.addSubview(handle)
+
+        // Word / character count — shown on hover
+        let count = NSTextField(labelWithString: "")
+        count.translatesAutoresizingMaskIntoConstraints = false
+        count.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        count.textColor = NSColor.tertiaryLabelColor
+        count.alignment = .center
+        count.alphaValue = 0
+        header.addSubview(count)
+        countLabel = count
 
         // Copy button
         let copy = NSButton(title: "", target: self, action: #selector(copySelf))
@@ -1537,6 +1549,9 @@ class SectionCellView: NSTableCellView {
             handle.centerXAnchor.constraint(equalTo: header.centerXAnchor),
             handle.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
+            count.centerXAnchor.constraint(equalTo: header.centerXAnchor),
+            count.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+
             del.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -10),
             del.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             del.widthAnchor.constraint(equalToConstant: 14),
@@ -1584,13 +1599,37 @@ class SectionCellView: NSTableCellView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        guard layer?.borderWidth == 0 else { return }
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.09).cgColor
+        isHovered = true
+        if layer?.borderWidth == 0 {
+            layer?.backgroundColor = NSColor.white.withAlphaComponent(0.09).cgColor
+        }
+        updateCountLabel()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            countLabel?.animator().alphaValue = 1
+        }
     }
 
     override func mouseExited(with event: NSEvent) {
-        guard layer?.borderWidth == 0 else { return }
-        layer?.backgroundColor = SectionCellView.warmFill.withAlphaComponent(0.04).cgColor
+        isHovered = false
+        if layer?.borderWidth == 0 {
+            layer?.backgroundColor = SectionCellView.warmFill.withAlphaComponent(0.04).cgColor
+        }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            countLabel?.animator().alphaValue = 0
+        }
+    }
+
+    private func updateCountLabel() {
+        guard let tv = textView else { return }
+        let plain = tv.string
+            .replacingOccurrences(of: "\u{FFFC}", with: "")  // strip attachment chars
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let words = plain.isEmpty ? 0 :
+            plain.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
+        let chars = plain.count
+        countLabel?.stringValue = "\(words)w · \(chars)c"
     }
 
     func setSelected(_ selected: Bool) {
@@ -1768,6 +1807,7 @@ extension SectionCellView: NSTextViewDelegate {
         let rtf = len > 0 ? (textView.hasRichContent() ? textView.rtfDataForStorage() : nil) : nil
         ctrl?.update(id: sectionId, content: textView.string, rtfData: rtf)
         ctrl?.refreshRowHeight(for: self)
+        if isHovered { updateCountLabel() }
     }
 
     func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange,
