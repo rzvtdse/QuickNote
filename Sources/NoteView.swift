@@ -498,6 +498,14 @@ class SectionTextView: NSTextView, NSLayoutManagerDelegate {
     }
 }
 
+// MARK: - Backup
+
+struct QuickNoteBackup: Codable {
+    let version: Int
+    let buckets: [NoteBucket]
+    let sections: [NoteSection]
+}
+
 // MARK: - Model
 
 struct NoteSection: Codable {
@@ -517,6 +525,13 @@ struct NoteBucket: Codable {
     var id: String
     var name: String
     init(name: String) { self.id = UUID().uuidString; self.name = name }
+    init(id: String, name: String) { self.id = id; self.name = name }
+}
+
+extension NoteSection {
+    init(id: String, content: String, bucketId: String?, rtfData: Data?) {
+        self.id = id; self.content = content; self.bucketId = bucketId; self.rtfData = rtfData
+    }
 }
 
 // MARK: - Controller
@@ -646,7 +661,25 @@ class SectionsController: NSObject {
         undoSectionButton.contentTintColor = NSColor.controlAccentColor
         undoSectionButton.isHidden = true
 
-        let bottomStack = NSStackView(views: [addBtn, mergeButton, undoSectionButton])
+        let exportBtn = NSButton(title: "Export", target: self, action: #selector(exportNotes))
+        exportBtn.translatesAutoresizingMaskIntoConstraints = false
+        exportBtn.isBordered = false
+        exportBtn.bezelStyle = .inline
+        exportBtn.image = NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: nil)
+        exportBtn.imagePosition = .imageLeading
+        exportBtn.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        exportBtn.contentTintColor = NSColor.secondaryLabelColor
+
+        let importBtn = NSButton(title: "Import", target: self, action: #selector(importNotes))
+        importBtn.translatesAutoresizingMaskIntoConstraints = false
+        importBtn.isBordered = false
+        importBtn.bezelStyle = .inline
+        importBtn.image = NSImage(systemSymbolName: "square.and.arrow.down", accessibilityDescription: nil)
+        importBtn.imagePosition = .imageLeading
+        importBtn.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        importBtn.contentTintColor = NSColor.secondaryLabelColor
+
+        let bottomStack = NSStackView(views: [addBtn, mergeButton, undoSectionButton, exportBtn, importBtn])
         bottomStack.translatesAutoresizingMaskIntoConstraints = false
         bottomStack.orientation = .horizontal
         bottomStack.spacing = 16
@@ -1162,6 +1195,87 @@ class SectionsController: NSObject {
         }
         if let id = UserDefaults.standard.string(forKey: "qn_active_bucket") {
             activeBucketId = id
+        }
+    }
+
+    // MARK: - Export / Import
+
+    @objc func exportNotes() {
+        let panel = NSSavePanel()
+        panel.title = "Export QuickNote Backup"
+        panel.nameFieldStringValue = "QuickNote Backup.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let backup = QuickNoteBackup(version: 1, buckets: buckets, sections: sections)
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(backup)
+            try data.write(to: url)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Export failed"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
+    }
+
+    @objc func importNotes() {
+        let panel = NSOpenPanel()
+        panel.title = "Import QuickNote Backup"
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            let backup = try JSONDecoder().decode(QuickNoteBackup.self, from: data)
+
+            let alert = NSAlert()
+            alert.messageText = "Import \(backup.buckets.count) tab(s) and \(backup.sections.count) section(s)?"
+            alert.informativeText = "Choose Replace to overwrite all current notes, or Merge to add them alongside existing ones."
+            alert.addButton(withTitle: "Replace")
+            alert.addButton(withTitle: "Merge")
+            alert.addButton(withTitle: "Cancel")
+            let response = alert.runModal()
+            if response == .alertThirdButtonReturn { return }
+
+            if response == .alertFirstButtonReturn {
+                // Replace
+                buckets = backup.buckets
+                sections = backup.sections
+                activeBucketId = buckets.first?.id ?? ""
+            } else {
+                // Merge — remap IDs to avoid collisions with existing data
+                var idMap: [String: String] = [:]
+                var newBuckets = backup.buckets.map { b -> NoteBucket in
+                    let newId = UUID().uuidString
+                    idMap[b.id] = newId
+                    return NoteBucket(id: newId, name: b.name)
+                }
+                // Avoid duplicate tab names
+                let existingNames = Set(buckets.map { $0.name })
+                for i in newBuckets.indices where existingNames.contains(newBuckets[i].name) {
+                    newBuckets[i].name += " (imported)"
+                }
+                let newSections = backup.sections.map { s -> NoteSection in
+                    NoteSection(id: UUID().uuidString,
+                                content: s.content,
+                                bucketId: s.bucketId.flatMap { idMap[$0] },
+                                rtfData: s.rtfData)
+                }
+                buckets += newBuckets
+                sections += newSections
+            }
+
+            save()
+            rebuildBucketBar()
+            tableView.reloadData()
+            DispatchQueue.main.async { self.focusLastSection() }
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Import failed"
+            alert.informativeText = "The file doesn't appear to be a valid QuickNote backup.\n\(error.localizedDescription)"
+            alert.runModal()
         }
     }
 }
