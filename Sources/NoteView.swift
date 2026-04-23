@@ -513,11 +513,23 @@ struct NoteSection: Codable {
     var content: String
     var bucketId: String?
     var rtfData: Data?          // rich-text blob; nil for plain-text-only sections
+    var isCollapsed: Bool = false
+
     init(content: String = "", bucketId: String? = nil) {
         self.id = UUID().uuidString
         self.content = content
         self.bucketId = bucketId
         self.rtfData = nil
+    }
+
+    // Custom decoder so old saved data without isCollapsed still loads
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id          = try c.decode(String.self, forKey: .id)
+        content     = try c.decode(String.self, forKey: .content)
+        bucketId    = try c.decodeIfPresent(String.self, forKey: .bucketId)
+        rtfData     = try c.decodeIfPresent(Data.self, forKey: .rtfData)
+        isCollapsed = (try? c.decodeIfPresent(Bool.self, forKey: .isCollapsed)) ?? false
     }
 }
 
@@ -888,6 +900,23 @@ class SectionsController: NSObject {
             guard let newRow = self.filteredSections.firstIndex(where: { $0.id == newSectionId }) else { return }
             self.tableView.scrollRowToVisible(newRow)
             (self.tableView.view(atColumn: 0, row: newRow, makeIfNecessary: false) as? SectionCellView)?.focus()
+        }
+    }
+
+    func toggleCollapse(id: String) {
+        guard let idx = sections.firstIndex(where: { $0.id == id }) else { return }
+        sections[idx].isCollapsed.toggle()
+        save()
+        let collapsed = sections[idx].isCollapsed
+        // Update cell immediately, then animate row height
+        if let row = filteredSections.firstIndex(where: { $0.id == id }),
+           let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SectionCellView {
+            cell.applyCollapsed(collapsed)
+        }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            ctx.allowsImplicitAnimation = true
+            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<tableView.numberOfRows))
         }
     }
 
@@ -1293,8 +1322,10 @@ extension SectionsController: NSTableViewDataSource, NSTableViewDelegate {
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        let section = filteredSections[row]
+        if section.isCollapsed { return SectionCellView.collapsedH }
         let w = max(100, tableView.bounds.width - 8)
-        return SectionCellView.rowHeight(content: filteredSections[row].content, width: w)
+        return SectionCellView.rowHeight(content: section.content, width: w)
     }
 
     // Drag source
@@ -1351,6 +1382,8 @@ extension SectionsController: NSSearchFieldDelegate {
 class SectionCellView: NSTableCellView {
 
     private var textView: SectionTextView!
+    private var headerView: NSView?
+    private var previewLabel: NSTextField?
     private var sectionId = ""
     private weak var ctrl: SectionsController?
     private var countLabel: NSTextField?
@@ -1358,6 +1391,7 @@ class SectionCellView: NSTableCellView {
 
     static let headerH: CGFloat = 22
     static let minH: CGFloat = 72
+    static let collapsedH: CGFloat = 26
 
     static func rowHeight(content: String, width: CGFloat) -> CGFloat {
         let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
@@ -1382,13 +1416,36 @@ class SectionCellView: NSTableCellView {
         let header = NSView()
         header.translatesAutoresizingMaskIntoConstraints = false
         addSubview(header)
+        headerView = header
+
+        // Click header to collapse/expand
+        let headerClick = NSClickGestureRecognizer(target: self, action: #selector(headerClicked))
+        header.addGestureRecognizer(headerClick)
+
+        // Drag handle — three horizontal dots
+        let handleImg = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "Drag")
+        let handle = NSImageView(image: handleImg ?? NSImage())
+        handle.translatesAutoresizingMaskIntoConstraints = false
+        handle.contentTintColor = NSColor.tertiaryLabelColor
+        handle.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .regular)
+        header.addSubview(handle)
+
+        // Preview — first line shown when collapsed
+        let preview = NSTextField(labelWithString: "")
+        preview.translatesAutoresizingMaskIntoConstraints = false
+        preview.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        preview.textColor = NSColor.secondaryLabelColor
+        preview.lineBreakMode = .byTruncatingTail
+        preview.isHidden = true
+        header.addSubview(preview)
+        previewLabel = preview
 
         // Word / character count — shown on hover
         let count = NSTextField(labelWithString: "")
         count.translatesAutoresizingMaskIntoConstraints = false
         count.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
         count.textColor = NSColor.tertiaryLabelColor
-        count.alignment = .center
+        count.alignment = .right
         count.alphaValue = 0
         header.addSubview(count)
         countLabel = count
@@ -1538,7 +1595,14 @@ class SectionCellView: NSTableCellView {
             header.trailingAnchor.constraint(equalTo: trailingAnchor),
             header.heightAnchor.constraint(equalToConstant: SectionCellView.headerH),
 
-            count.centerXAnchor.constraint(equalTo: header.centerXAnchor),
+            handle.centerXAnchor.constraint(equalTo: header.centerXAnchor),
+            handle.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+
+            preview.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 10),
+            preview.trailingAnchor.constraint(equalTo: copy.leadingAnchor, constant: -8),
+            preview.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+
+            count.trailingAnchor.constraint(equalTo: copy.leadingAnchor, constant: -8),
             count.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
             del.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -10),
@@ -1561,6 +1625,35 @@ class SectionCellView: NSTableCellView {
             textView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             textView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
         ])
+
+        // Apply initial collapsed state without animation
+        applyCollapsed(section.isCollapsed)
+    }
+
+    func applyCollapsed(_ collapsed: Bool) {
+        textView?.isHidden = collapsed
+        previewLabel?.isHidden = !collapsed
+        if collapsed { updatePreviewLabel() }
+        // Clip the cell so content doesn't overflow when row height shrinks
+        clipsToBounds = true
+        wantsLayer = true
+    }
+
+    private func updatePreviewLabel() {
+        guard let tv = textView else { return }
+        let firstLine = tv.string
+            .components(separatedBy: .newlines)
+            .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) ?? ""
+        // Strip object replacement chars (checkboxes)
+        let clean = firstLine.replacingOccurrences(of: "\u{FFFC}", with: "").trimmingCharacters(in: .whitespaces)
+        previewLabel?.stringValue = clean.isEmpty ? "(empty)" : clean
+    }
+
+    @objc private func headerClicked(_ recognizer: NSClickGestureRecognizer) {
+        // Ignore clicks on the action buttons (copy/dup/del)
+        let pt = recognizer.location(in: headerView)
+        if let headerView, pt.x > headerView.bounds.width - 60 { return }
+        ctrl?.toggleCollapse(id: sectionId)
     }
 
     func focus() { textView?.window?.makeFirstResponder(textView) }
