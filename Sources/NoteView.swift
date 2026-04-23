@@ -514,6 +514,8 @@ struct NoteSection: Codable {
     var bucketId: String?
     var rtfData: Data?          // rich-text blob; nil for plain-text-only sections
     var isCollapsed: Bool = false
+    var lastModified: Date = Date()
+    var isPinned: Bool = false
 
     init(content: String = "", bucketId: String? = nil) {
         self.id = UUID().uuidString
@@ -522,14 +524,16 @@ struct NoteSection: Codable {
         self.rtfData = nil
     }
 
-    // Custom decoder so old saved data without isCollapsed still loads
+    // Custom decoder so old saved data without new fields still loads
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id          = try c.decode(String.self, forKey: .id)
-        content     = try c.decode(String.self, forKey: .content)
-        bucketId    = try c.decodeIfPresent(String.self, forKey: .bucketId)
-        rtfData     = try c.decodeIfPresent(Data.self, forKey: .rtfData)
-        isCollapsed = (try? c.decodeIfPresent(Bool.self, forKey: .isCollapsed)) ?? false
+        id           = try c.decode(String.self, forKey: .id)
+        content      = try c.decode(String.self, forKey: .content)
+        bucketId     = try c.decodeIfPresent(String.self, forKey: .bucketId)
+        rtfData      = try c.decodeIfPresent(Data.self, forKey: .rtfData)
+        isCollapsed  = (try? c.decodeIfPresent(Bool.self, forKey: .isCollapsed)) ?? false
+        lastModified = (try? c.decodeIfPresent(Date.self, forKey: .lastModified)) ?? Date()
+        isPinned     = (try? c.decodeIfPresent(Bool.self, forKey: .isPinned)) ?? false
     }
 }
 
@@ -556,8 +560,11 @@ class SectionsController: NSObject {
     private var bucketHistory: [String] = []   // most-recent-last
     private var searchQuery: String = ""
     private var tableView: NSTableView!
-    private var mergeButton: NSButton!
-    private var undoSectionButton: NSButton!
+    private var pinnedTableView: NSTableView!
+    private var pinnedScrollView: NSScrollView!
+    private var pinnedHeightConstraint: NSLayoutConstraint!
+    private var mergeButton: HoverButton!
+    private var undoSectionButton: HoverButton!
     private var undoSectionTimer: Timer?
     private var frameChangeDebounce: Timer?
     private var searchField: NSSearchField!
@@ -574,12 +581,22 @@ class SectionsController: NSObject {
 
     static let pbType = NSPasteboard.PasteboardType("com.quicknote.section")
 
-    /// Sections in the active bucket, further filtered by search query.
-    private var filteredSections: [NoteSection] {
-        let inBucket = sections.filter { ($0.bucketId ?? "") == activeBucketId }
+    /// Pinned sections in the active bucket, filtered by search query.
+    private var filteredPinnedSections: [NoteSection] {
+        let inBucket = sections.filter { ($0.bucketId ?? "") == activeBucketId && $0.isPinned }
         guard !searchQuery.isEmpty else { return inBucket }
         return inBucket.filter { $0.content.localizedCaseInsensitiveContains(searchQuery) }
     }
+
+    /// Unpinned sections in the active bucket, filtered by search query.
+    private var filteredUnpinnedSections: [NoteSection] {
+        let inBucket = sections.filter { ($0.bucketId ?? "") == activeBucketId && !$0.isPinned }
+        guard !searchQuery.isEmpty else { return inBucket }
+        return inBucket.filter { $0.content.localizedCaseInsensitiveContains(searchQuery) }
+    }
+
+    /// Alias for filteredUnpinnedSections — keeps existing call sites working.
+    private var filteredSections: [NoteSection] { filteredUnpinnedSections }
 
     // MARK: Build UI
 
@@ -593,23 +610,25 @@ class SectionsController: NSObject {
         parent.addSubview(bucketBar)
 
         // Export / Import icon buttons — top-right corner, icon-only
-        let exportBtn = NSButton(title: "", target: self, action: #selector(exportNotes))
+        let exportBtn = HoverButton(title: "", target: self, action: #selector(exportNotes))
         exportBtn.translatesAutoresizingMaskIntoConstraints = false
         exportBtn.isBordered = false
         exportBtn.bezelStyle = .inline
         exportBtn.image = NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: "Export")
         exportBtn.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
-        exportBtn.contentTintColor = NSColor.white.withAlphaComponent(0.40)
+        exportBtn.dimColor = NSColor.white.withAlphaComponent(0.40)
+        exportBtn.hoverColor = NSColor.white.withAlphaComponent(0.90)
         exportBtn.toolTip = "Export notes"
         parent.addSubview(exportBtn)
 
-        let importBtn = NSButton(title: "", target: self, action: #selector(importNotes))
+        let importBtn = HoverButton(title: "", target: self, action: #selector(importNotes))
         importBtn.translatesAutoresizingMaskIntoConstraints = false
         importBtn.isBordered = false
         importBtn.bezelStyle = .inline
         importBtn.image = NSImage(systemSymbolName: "square.and.arrow.down", accessibilityDescription: "Import")
         importBtn.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
-        importBtn.contentTintColor = NSColor.white.withAlphaComponent(0.40)
+        importBtn.dimColor = NSColor.white.withAlphaComponent(0.40)
+        importBtn.hoverColor = NSColor.white.withAlphaComponent(0.90)
         importBtn.toolTip = "Import notes"
         parent.addSubview(importBtn)
 
@@ -646,6 +665,36 @@ class SectionsController: NSObject {
         NotificationCenter.default.addObserver(self, selector: #selector(tableFrameChanged),
                                                name: NSView.frameDidChangeNotification,
                                                object: tableView)
+        // Also observe the pinned table so pinned height updates when width changes
+
+        // Pinned table — sits above the scroll view, shows full height (no scroll)
+        pinnedTableView = NSTableView()
+        pinnedTableView.backgroundColor = .clear
+        pinnedTableView.headerView = nil
+        pinnedTableView.intercellSpacing = NSSize(width: 0, height: 8)
+        pinnedTableView.selectionHighlightStyle = .none
+        pinnedTableView.allowsEmptySelection = true
+        pinnedTableView.gridStyleMask = []
+        if #available(macOS 11, *) { pinnedTableView.style = .plain }
+
+        let pinnedCol = NSTableColumn(identifier: .init("pinnedCol"))
+        pinnedCol.resizingMask = .autoresizingMask
+        pinnedTableView.addTableColumn(pinnedCol)
+        pinnedTableView.dataSource = self
+        pinnedTableView.delegate = self
+        pinnedTableView.registerForDraggedTypes([SectionsController.pbType])
+        pinnedTableView.setDraggingSourceOperationMask(.move, forLocal: true)
+        pinnedScrollView = NSScrollView()
+        pinnedScrollView.translatesAutoresizingMaskIntoConstraints = false
+        pinnedScrollView.documentView = pinnedTableView
+        pinnedScrollView.drawsBackground = false
+        pinnedScrollView.hasVerticalScroller = false
+        pinnedScrollView.hasHorizontalScroller = false
+        pinnedScrollView.borderType = .noBorder
+        pinnedScrollView.contentView.wantsLayer = true
+        pinnedScrollView.contentView.layer?.masksToBounds = false
+        parent.addSubview(pinnedScrollView)
+
 
         let scroll = NSScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
@@ -656,33 +705,36 @@ class SectionsController: NSObject {
         scroll.borderType = .noBorder
         parent.addSubview(scroll)
 
-        let addBtn = NSButton(title: "New Section", target: self, action: #selector(addSection))
+        let addBtn = HoverButton(title: "New Section", target: self, action: #selector(addSection))
         addBtn.translatesAutoresizingMaskIntoConstraints = false
         addBtn.isBordered = false
         addBtn.bezelStyle = .inline
         addBtn.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
         addBtn.imagePosition = .imageLeading
         addBtn.font = NSFont.systemFont(ofSize: 12, weight: .regular)
-        addBtn.contentTintColor = NSColor.secondaryLabelColor
+        addBtn.dimColor = NSColor.secondaryLabelColor
+        addBtn.hoverColor = NSColor.labelColor.withAlphaComponent(0.85)
 
-        mergeButton = NSButton(title: "Merge", target: self, action: #selector(mergeSections))
+        mergeButton = HoverButton(title: "Merge", target: self, action: #selector(mergeSections))
         mergeButton.translatesAutoresizingMaskIntoConstraints = false
         mergeButton.isBordered = false
         mergeButton.bezelStyle = .inline
         mergeButton.image = NSImage(systemSymbolName: "arrow.triangle.merge", accessibilityDescription: nil)
         mergeButton.imagePosition = .imageLeading
         mergeButton.font = NSFont.systemFont(ofSize: 12, weight: .regular)
-        mergeButton.contentTintColor = NSColor.controlAccentColor
+        mergeButton.dimColor = NSColor.controlAccentColor
+        mergeButton.hoverColor = NSColor.controlAccentColor.withAlphaComponent(0.7)
         mergeButton.isHidden = true
 
-        undoSectionButton = NSButton(title: "Undo", target: self, action: #selector(undoDeleteSection))
+        undoSectionButton = HoverButton(title: "Undo", target: self, action: #selector(undoDeleteSection))
         undoSectionButton.translatesAutoresizingMaskIntoConstraints = false
         undoSectionButton.isBordered = false
         undoSectionButton.bezelStyle = .inline
         undoSectionButton.image = NSImage(systemSymbolName: "arrow.uturn.backward", accessibilityDescription: nil)
         undoSectionButton.imagePosition = .imageLeading
         undoSectionButton.font = NSFont.systemFont(ofSize: 12, weight: .regular)
-        undoSectionButton.contentTintColor = NSColor.controlAccentColor
+        undoSectionButton.dimColor = NSColor.controlAccentColor
+        undoSectionButton.hoverColor = NSColor.controlAccentColor.withAlphaComponent(0.7)
         undoSectionButton.isHidden = true
 
         let bottomStack = NSStackView(views: [addBtn, mergeButton, undoSectionButton])
@@ -693,6 +745,7 @@ class SectionsController: NSObject {
         parent.addSubview(bottomStack)
 
         searchHeightConstraint = searchField.heightAnchor.constraint(equalToConstant: 0)
+        pinnedHeightConstraint = pinnedScrollView.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             importBtn.centerYAnchor.constraint(equalTo: bucketBar.centerYAnchor),
             importBtn.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -8),
@@ -714,7 +767,12 @@ class SectionsController: NSObject {
             searchField.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -8),
             searchHeightConstraint,
 
-            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 4),
+            pinnedScrollView.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 4),
+            pinnedScrollView.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 8),
+            pinnedScrollView.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -8),
+            pinnedHeightConstraint,
+
+            scroll.topAnchor.constraint(equalTo: pinnedScrollView.bottomAnchor, constant: 4),
             scroll.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 8),
             scroll.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -8),
             scroll.bottomAnchor.constraint(equalTo: bottomStack.topAnchor, constant: -8),
@@ -788,18 +846,31 @@ class SectionsController: NSObject {
             return event
         }
 
-        // Cmd+click monitor for multi-select
+        // Cmd+click monitor for multi-select (handles both main and pinned tables)
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             guard let self = self else { return event }
+            // Check main table
             let pt = self.tableView.convert(event.locationInWindow, from: nil)
             let row = self.tableView.row(at: pt)
-            if event.modifierFlags.contains(.command), row >= 0, row < self.filteredSections.count {
-                let id = self.filteredSections[row].id
-                if self.selectedIds.contains(id) { self.selectedIds.remove(id) }
-                else { self.selectedIds.insert(id) }
-                self.updateSelectionUI()
-                return nil // consume — don't focus text view
-            } else if !event.modifierFlags.contains(.command), !self.selectedIds.isEmpty {
+            // Check pinned table
+            let pinnedPt = self.pinnedTableView.convert(event.locationInWindow, from: nil)
+            let pinnedRow = self.pinnedTableView.row(at: pinnedPt)
+
+            if event.modifierFlags.contains(.command) {
+                if row >= 0, row < self.filteredSections.count {
+                    let id = self.filteredSections[row].id
+                    if self.selectedIds.contains(id) { self.selectedIds.remove(id) }
+                    else { self.selectedIds.insert(id) }
+                    self.updateSelectionUI()
+                    return nil
+                } else if pinnedRow >= 0, pinnedRow < self.filteredPinnedSections.count {
+                    let id = self.filteredPinnedSections[pinnedRow].id
+                    if self.selectedIds.contains(id) { self.selectedIds.remove(id) }
+                    else { self.selectedIds.insert(id) }
+                    self.updateSelectionUI()
+                    return nil
+                }
+            } else if !self.selectedIds.isEmpty {
                 // Don't clear selection when clicking the merge button itself
                 let ptInMerge = self.mergeButton.convert(event.locationInWindow, from: nil)
                 if !self.mergeButton.bounds.contains(ptInMerge) {
@@ -828,7 +899,7 @@ class SectionsController: NSObject {
     private func hideSearch() {
         searchField.stringValue = ""
         searchQuery = ""
-        tableView.reloadData()
+        reloadAllSections()
         searchField.isHidden = true
         searchHeightConstraint.isActive = true
         focusLastSection()
@@ -842,7 +913,10 @@ class SectionsController: NSObject {
                 ctx.duration = 0
                 self.tableView.noteHeightOfRows(withIndexesChanged:
                     IndexSet(integersIn: 0..<self.tableView.numberOfRows))
+                self.pinnedTableView.noteHeightOfRows(withIndexesChanged:
+                    IndexSet(integersIn: 0..<self.pinnedTableView.numberOfRows))
             }
+            self.updatePinnedHeight()
         }
     }
 
@@ -854,11 +928,18 @@ class SectionsController: NSObject {
             (tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SectionCellView)?
                 .setSelected(selectedIds.contains(filteredSections[row].id))
         }
+        for row in 0..<pinnedTableView.numberOfRows {
+            guard row < filteredPinnedSections.count else { continue }
+            (pinnedTableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SectionCellView)?
+                .setSelected(selectedIds.contains(filteredPinnedSections[row].id))
+        }
         mergeButton.isHidden = selectedIds.count < 2
     }
 
     @objc func mergeSections() {
-        let ordered = filteredSections.filter { selectedIds.contains($0.id) }
+        // Merge from both pinned and unpinned selections
+        let allFiltered = filteredPinnedSections + filteredSections
+        let ordered = allFiltered.filter { selectedIds.contains($0.id) }
         guard ordered.count >= 2 else { return }
         let merged = ordered.map { $0.content }.joined(separator: "\n\n")
         let firstId = ordered[0].id
@@ -868,7 +949,7 @@ class SectionsController: NSObject {
         }
         sections.removeAll { removeIds.contains($0.id) }
         selectedIds.removeAll()
-        tableView.reloadData()
+        reloadAllSections()
         updateSelectionUI()
         save()
     }
@@ -878,7 +959,7 @@ class SectionsController: NSObject {
     @objc func addSection() {
         selectedIds.removeAll()
         sections.append(NoteSection(bucketId: activeBucketId))
-        tableView.reloadData()
+        reloadAllSections()
         save()
         DispatchQueue.main.async {
             let row = self.tableView.numberOfRows - 1
@@ -894,7 +975,7 @@ class SectionsController: NSObject {
         let newSection = NoteSection(content: after, bucketId: sections[idx].bucketId)
         sections.insert(newSection, at: idx + 1)
         save()
-        tableView.reloadData()
+        reloadAllSections()
         let newSectionId = newSection.id
         DispatchQueue.main.async {
             guard let newRow = self.filteredSections.firstIndex(where: { $0.id == newSectionId }) else { return }
@@ -908,15 +989,24 @@ class SectionsController: NSObject {
         sections[idx].isCollapsed.toggle()
         save()
         let collapsed = sections[idx].isCollapsed
-        // Update cell immediately, then animate row height
-        if let row = filteredSections.firstIndex(where: { $0.id == id }),
-           let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SectionCellView {
+        // Update cell immediately in whichever table it's in, then animate row height
+        if let row = filteredPinnedSections.firstIndex(where: { $0.id == id }),
+           let cell = pinnedTableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SectionCellView {
             cell.applyCollapsed(collapsed)
-        }
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.2
-            ctx.allowsImplicitAnimation = true
-            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<tableView.numberOfRows))
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.2
+                ctx.allowsImplicitAnimation = true
+                self.pinnedTableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<self.pinnedTableView.numberOfRows))
+            }
+            updatePinnedHeight()
+        } else if let row = filteredSections.firstIndex(where: { $0.id == id }),
+                  let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SectionCellView {
+            cell.applyCollapsed(collapsed)
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.2
+                ctx.allowsImplicitAnimation = true
+                self.tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<self.tableView.numberOfRows))
+            }
         }
     }
 
@@ -924,6 +1014,7 @@ class SectionsController: NSObject {
         guard let idx = sections.firstIndex(where: { $0.id == id }) else { return }
         sections[idx].content = content
         sections[idx].rtfData = rtfData
+        sections[idx].lastModified = Date()
         rememberLastSection(id)
         save()
     }
@@ -947,7 +1038,7 @@ class SectionsController: NSObject {
             sections.append(NoteSection(bucketId: activeBucketId))
         }
         selectedIds.removeAll()
-        tableView.reloadData()
+        reloadAllSections()
         save()
         DispatchQueue.main.async { self.focusLastSection() }
         showUndoSectionButton()
@@ -960,8 +1051,8 @@ class SectionsController: NSObject {
         copy.rtfData = original.rtfData
         sections.insert(copy, at: idx + 1)
         save()
-        tableView.reloadData()
-        // Focus the new duplicate
+        reloadAllSections()
+        // Focus the new duplicate (duplicates are unpinned so look in main table)
         DispatchQueue.main.async {
             let filtered = self.filteredSections
             if let row = filtered.firstIndex(where: { $0.id == copy.id }) {
@@ -1002,14 +1093,20 @@ class SectionsController: NSObject {
             UserDefaults.standard.set(activeBucketId, forKey: "qn_active_bucket")
             rebuildBucketBar()
         }
-        tableView.reloadData()
-        // Focus the restored section
+        reloadAllSections()
+        // Focus the restored section — check both tables
         DispatchQueue.main.async {
-            let filtered = self.filteredSections
-            if let row = filtered.firstIndex(where: { $0.id == entry.section.id }) {
-                self.tableView.scrollRowToVisible(row)
-                if let cell = self.tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SectionCellView {
+            if let row = self.filteredPinnedSections.firstIndex(where: { $0.id == entry.section.id }) {
+                if let cell = self.pinnedTableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SectionCellView {
                     cell.focus()
+                }
+            } else {
+                let filtered = self.filteredSections
+                if let row = filtered.firstIndex(where: { $0.id == entry.section.id }) {
+                    self.tableView.scrollRowToVisible(row)
+                    if let cell = self.tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SectionCellView {
+                        cell.focus()
+                    }
                 }
             }
         }
@@ -1029,7 +1126,35 @@ class SectionsController: NSObject {
             ctx.duration = 0
             self.tableView.noteHeightOfRows(withIndexesChanged:
                 IndexSet(integersIn: 0..<self.tableView.numberOfRows))
+            self.pinnedTableView.noteHeightOfRows(withIndexesChanged:
+                IndexSet(integersIn: 0..<self.pinnedTableView.numberOfRows))
         }
+        updatePinnedHeight()
+    }
+
+    // MARK: Pin
+
+    func togglePin(id: String) {
+        guard let idx = sections.firstIndex(where: { $0.id == id }) else { return }
+        sections[idx].isPinned.toggle()
+        save()
+        reloadAllSections()
+    }
+
+    func reloadAllSections() {
+        tableView.reloadData()
+        pinnedTableView.reloadData()
+        updatePinnedHeight()
+    }
+
+    private func updatePinnedHeight() {
+        let w = max(100, tableView.bounds.width - 8)
+        let spacing: CGFloat = 8
+        let bottomPadding: CGFloat = 6   // room for rounded corners of last cell
+        let total = filteredPinnedSections.reduce(CGFloat(0)) { sum, s in
+            sum + SectionCellView.rowHeight(content: s.content, width: w) + spacing
+        }
+        pinnedHeightConstraint.constant = total > 0 ? total - spacing + bottomPadding : 0
     }
 
     // MARK: Buckets
@@ -1067,6 +1192,7 @@ class SectionsController: NSObject {
             tab.onClick = { [weak self] in self?.switchToBucket(b.id) }
             tab.onRename = { [weak self] newName in self?.renameBucket(id: b.id, to: newName) }
             tab.onRequestDelete = { [weak self] in self?.deleteBucket(id: b.id) }
+            tab.onRequestDuplicate = { [weak self] in self?.duplicateBucket(id: b.id) }
             tab.onDidEndEditing = { [weak self] in self?.focusLastSection() }
             tab.onReceiveDrop = { [weak self] sectionId in
                 guard let self,
@@ -1120,7 +1246,7 @@ class SectionsController: NSObject {
         // Rebuild the bar (deleted tab must disappear) then reload table
         rebuildBucketBar()
         selectedIds.removeAll()
-        tableView.reloadData()
+        reloadAllSections()
         updateSelectionUI()
         DispatchQueue.main.async { self.focusLastSection() }
     }
@@ -1139,7 +1265,7 @@ class SectionsController: NSObject {
         UserDefaults.standard.set(activeBucketId, forKey: "qn_active_bucket")
         rebuildBucketBar()
         selectedIds.removeAll()
-        tableView.reloadData()
+        reloadAllSections()
         updateSelectionUI()
         DispatchQueue.main.async { self.focusLastSection() }
     }
@@ -1160,7 +1286,38 @@ class SectionsController: NSObject {
         for tab in bucketBar.tabs {
             tab.isActive = (tab.bucketId == id)
         }
-        tableView.reloadData()
+        reloadAllSections()
+        updateSelectionUI()
+        DispatchQueue.main.async { self.focusLastSection() }
+    }
+
+    private func duplicateBucket(id: String) {
+        guard let idx = buckets.firstIndex(where: { $0.id == id }) else { return }
+        let source = buckets[idx]
+        let newBucket = NoteBucket(name: source.name + " copy")
+        // Insert right after the source tab
+        buckets.insert(newBucket, at: idx + 1)
+        // Deep-copy all sections belonging to the source tab
+        let sourceSections = sections.filter { $0.bucketId == source.id }
+        let copies = sourceSections.map { s -> NoteSection in
+            var copy = NoteSection(content: s.content, bucketId: newBucket.id)
+            copy.rtfData = s.rtfData
+            return copy
+        }
+        // Insert copies after the last section of the source tab
+        if let lastIdx = sections.lastIndex(where: { $0.bucketId == source.id }) {
+            sections.insert(contentsOf: copies, at: lastIdx + 1)
+        } else {
+            sections.append(contentsOf: copies)
+        }
+        // If no sections were copied, add a blank one
+        if copies.isEmpty { sections.append(NoteSection(bucketId: newBucket.id)) }
+        bucketHistory.append(activeBucketId)
+        activeBucketId = newBucket.id
+        UserDefaults.standard.set(newBucket.id, forKey: "qn_active_bucket")
+        save()
+        rebuildBucketBar()
+        reloadAllSections()
         updateSelectionUI()
         DispatchQueue.main.async { self.focusLastSection() }
     }
@@ -1179,7 +1336,7 @@ class SectionsController: NSObject {
         }
         save()
         rebuildBucketBar()
-        tableView.reloadData()
+        reloadAllSections()
         updateSelectionUI()
         DispatchQueue.main.async { self.focusLastSection() }
     }
@@ -1298,7 +1455,7 @@ class SectionsController: NSObject {
 
             save()
             rebuildBucketBar()
-            tableView.reloadData()
+            reloadAllSections()
             DispatchQueue.main.async { self.focusLastSection() }
         } catch {
             let alert = NSAlert()
@@ -1313,16 +1470,19 @@ class SectionsController: NSObject {
 
 extension SectionsController: NSTableViewDataSource, NSTableViewDelegate {
 
-    func numberOfRows(in tableView: NSTableView) -> Int { filteredSections.count }
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        tableView === pinnedTableView ? filteredPinnedSections.count : filteredSections.count
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let cell = SectionCellView()
-        cell.configure(filteredSections[row], query: searchQuery, ctrl: self)
+        let section = tableView === pinnedTableView ? filteredPinnedSections[row] : filteredSections[row]
+        cell.configure(section, query: searchQuery, ctrl: self)
         return cell
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        let section = filteredSections[row]
+        let section = tableView === pinnedTableView ? filteredPinnedSections[row] : filteredSections[row]
         if section.isCollapsed { return SectionCellView.collapsedH }
         let w = max(100, tableView.bounds.width - 8)
         return SectionCellView.rowHeight(content: section.content, width: w)
@@ -1331,34 +1491,43 @@ extension SectionsController: NSTableViewDataSource, NSTableViewDelegate {
     // Drag source
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
         guard searchQuery.isEmpty else { return nil }
+        let sections = tableView === pinnedTableView ? filteredPinnedSections : filteredSections
         let item = NSPasteboardItem()
-        item.setString(filteredSections[row].id, forType: SectionsController.pbType)
+        item.setString(sections[row].id, forType: SectionsController.pbType)
         return item
     }
 
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int,
                    proposedDropOperation op: NSTableView.DropOperation) -> NSDragOperation {
-        op == .above ? .move : []
+        guard op == .above else { return [] }
+        // Prevent cross-table drops: check if the dragged item is pinned or not
+        guard let fromId = info.draggingPasteboard.string(forType: SectionsController.pbType),
+              let fromSection = sections.first(where: { $0.id == fromId }) else { return [] }
+        let isPinnedDrag = fromSection.isPinned
+        let isInPinnedTable = tableView === pinnedTableView
+        // Only allow drop within the same table type
+        guard isPinnedDrag == isInPinnedTable else { return [] }
+        return .move
     }
 
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int,
                    dropOperation: NSTableView.DropOperation) -> Bool {
         guard let fromId = info.draggingPasteboard.string(forType: SectionsController.pbType),
-              let fromGlobal = sections.firstIndex(where: { $0.id == fromId }) else { return false }
-        // `row` is an index into filteredSections; map it to a global insertion index.
-        let filtered = filteredSections
+              let fromGlobal = self.sections.firstIndex(where: { $0.id == fromId }) else { return false }
+        let isPinnedTable = tableView === pinnedTableView
+        let filtered = isPinnedTable ? filteredPinnedSections : filteredSections
         let targetGlobal: Int
         if row >= filtered.count {
-            // Dropped after last filtered row; insert after last section in this bucket
-            targetGlobal = (sections.lastIndex(where: { $0.bucketId == activeBucketId }) ?? (sections.isEmpty ? 0 : sections.count - 1)) + 1
+            // Dropped after last filtered row; insert after last section with the same pin status in this bucket
+            targetGlobal = (self.sections.lastIndex(where: { ($0.bucketId ?? "") == activeBucketId && $0.isPinned == isPinnedTable }) ?? (self.sections.isEmpty ? 0 : self.sections.count - 1)) + 1
         } else {
             let anchorId = filtered[row].id
-            targetGlobal = sections.firstIndex(where: { $0.id == anchorId }) ?? sections.count
+            targetGlobal = self.sections.firstIndex(where: { $0.id == anchorId }) ?? self.sections.count
         }
-        let moved = sections.remove(at: fromGlobal)
+        let moved = self.sections.remove(at: fromGlobal)
         let adjusted = targetGlobal > fromGlobal ? targetGlobal - 1 : targetGlobal
-        sections.insert(moved, at: min(adjusted, sections.count))
-        tableView.reloadData()
+        self.sections.insert(moved, at: min(adjusted, self.sections.count))
+        reloadAllSections()
         save()
         return true
     }
@@ -1372,10 +1541,37 @@ extension SectionsController: NSSearchFieldDelegate {
         searchQuery = field.stringValue
         searchDebounce?.invalidate()
         searchDebounce = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: false) { [weak self] _ in
-            self?.tableView.reloadData()
+            self?.reloadAllSections()
         }
     }
 }
+
+// MARK: - Hover Button
+
+class HoverButton: NSButton {
+    /// The color used when the mouse is NOT over the button.
+    var dimColor: NSColor = NSColor.tertiaryLabelColor {
+        didSet { contentTintColor = dimColor }
+    }
+    /// The color used when the mouse IS over the button.
+    var hoverColor: NSColor = NSColor.labelColor.withAlphaComponent(0.85)
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil
+        ))
+    }
+    override func mouseEntered(with event: NSEvent) { contentTintColor = hoverColor }
+    override func mouseExited(with event: NSEvent)  { contentTintColor = dimColor }
+}
+
+// MARK: - Section Header View
+
+private class SectionHeaderView: NSView {}
 
 // MARK: - Section Cell View
 
@@ -1384,10 +1580,17 @@ class SectionCellView: NSTableCellView {
     private var textView: SectionTextView!
     private var headerView: NSView?
     private var previewLabel: NSTextField?
+    private var collapseButton: HoverButton?
+    private var copyButton: HoverButton?
+    private var dupButton: HoverButton?
+    private var delButton: HoverButton?
+    private var timestampLabel: NSTextField?
     private var sectionId = ""
     private weak var ctrl: SectionsController?
     private var countLabel: NSTextField?
     private var isHovered = false
+    private var pinButton: HoverButton?
+    private var isPinned = false
 
     static let headerH: CGFloat = 22
     static let minH: CGFloat = 72
@@ -1412,15 +1615,11 @@ class SectionCellView: NSTableCellView {
         layer?.cornerRadius = 5
         layer?.backgroundColor = NSColor(red: 1.0, green: 0.88, blue: 0.60, alpha: 0.04).cgColor
 
-        // Header bar — drag handle centred, buttons on the right
-        let header = NSView()
+        // Header bar
+        let header = SectionHeaderView()
         header.translatesAutoresizingMaskIntoConstraints = false
         addSubview(header)
         headerView = header
-
-        // Click header to collapse/expand
-        let headerClick = NSClickGestureRecognizer(target: self, action: #selector(headerClicked))
-        header.addGestureRecognizer(headerClick)
 
         // Drag handle — three horizontal dots
         let handleImg = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "Drag")
@@ -1429,6 +1628,29 @@ class SectionCellView: NSTableCellView {
         handle.contentTintColor = NSColor.tertiaryLabelColor
         handle.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .regular)
         header.addSubview(handle)
+
+        // Collapse/expand chevron button — always visible, far right
+        let chevron = HoverButton(title: "", target: self, action: #selector(collapseToggled))
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        chevron.image = NSImage(systemSymbolName: "chevron.up", accessibilityDescription: "Collapse")
+        chevron.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .medium)
+        chevron.isBordered = false
+        chevron.bezelStyle = .inline
+        chevron.dimColor = NSColor.tertiaryLabelColor
+        chevron.hoverColor = NSColor.labelColor.withAlphaComponent(0.85)
+        chevron.toolTip = "Collapse section"
+        header.addSubview(chevron)
+        collapseButton = chevron
+
+        // Timestamp label — shown on hover, next to chevron
+        let ts = NSTextField(labelWithString: "")
+        ts.translatesAutoresizingMaskIntoConstraints = false
+        ts.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        ts.textColor = NSColor.tertiaryLabelColor
+        ts.alphaValue = 0
+        header.addSubview(ts)
+        timestampLabel = ts
+        ts.stringValue = Self.relativeTime(section.lastModified)
 
         // Preview — first line shown when collapsed
         let preview = NSTextField(labelWithString: "")
@@ -1451,36 +1673,59 @@ class SectionCellView: NSTableCellView {
         countLabel = count
 
         // Copy button
-        let copy = NSButton(title: "", target: self, action: #selector(copySelf))
+        let copy = HoverButton(title: "", target: self, action: #selector(copySelf))
         copy.translatesAutoresizingMaskIntoConstraints = false
         copy.isBordered = false
         copy.bezelStyle = .inline
         copy.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
         copy.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .light)
-        copy.contentTintColor = NSColor.tertiaryLabelColor
+        copy.dimColor = NSColor.tertiaryLabelColor
+        copy.hoverColor = NSColor.labelColor.withAlphaComponent(0.85)
+        copy.alphaValue = 0
         copy.toolTip = "Copy section"
         header.addSubview(copy)
+        copyButton = copy
 
         // Duplicate button
-        let dup = NSButton(title: "", target: self, action: #selector(duplicateSelf))
+        let dup = HoverButton(title: "", target: self, action: #selector(duplicateSelf))
         dup.translatesAutoresizingMaskIntoConstraints = false
         dup.isBordered = false
         dup.bezelStyle = .inline
         dup.image = NSImage(systemSymbolName: "plus.square.on.square", accessibilityDescription: "Duplicate")
         dup.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .light)
-        dup.contentTintColor = NSColor.tertiaryLabelColor
+        dup.dimColor = NSColor.tertiaryLabelColor
+        dup.hoverColor = NSColor.labelColor.withAlphaComponent(0.85)
+        dup.alphaValue = 0
         dup.toolTip = "Duplicate section"
         header.addSubview(dup)
+        dupButton = dup
 
         // Delete button
-        let del = NSButton(title: "", target: self, action: #selector(deleteSelf))
+        let del = HoverButton(title: "", target: self, action: #selector(deleteSelf))
         del.translatesAutoresizingMaskIntoConstraints = false
         del.isBordered = false
         del.bezelStyle = .inline
         del.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Delete")
         del.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .regular)
-        del.contentTintColor = NSColor.tertiaryLabelColor
+        del.dimColor = NSColor.tertiaryLabelColor
+        del.hoverColor = NSColor.labelColor.withAlphaComponent(0.85)
+        del.alphaValue = 0
         header.addSubview(del)
+        delButton = del
+
+        // Pin button
+        let pin = HoverButton(title: "", target: self, action: #selector(pinToggled))
+        pin.translatesAutoresizingMaskIntoConstraints = false
+        pin.isBordered = false
+        pin.bezelStyle = .inline
+        pin.image = NSImage(systemSymbolName: "pin", accessibilityDescription: "Pin")
+        pin.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .regular)
+        pin.dimColor = NSColor.tertiaryLabelColor
+        pin.hoverColor = NSColor.labelColor.withAlphaComponent(0.85)
+        pin.alphaValue = 0
+        pin.toolTip = "Pin section"
+        header.addSubview(pin)
+        pinButton = pin
 
         // Text view
         textView = SectionTextView()
@@ -1595,22 +1840,35 @@ class SectionCellView: NSTableCellView {
             header.trailingAnchor.constraint(equalTo: trailingAnchor),
             header.heightAnchor.constraint(equalToConstant: SectionCellView.headerH),
 
+            chevron.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 8),
+            chevron.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            chevron.widthAnchor.constraint(equalToConstant: 14),
+            chevron.heightAnchor.constraint(equalToConstant: 14),
+
+            ts.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: 5),
+            ts.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+
             handle.centerXAnchor.constraint(equalTo: header.centerXAnchor),
             handle.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
-            preview.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 10),
+            preview.leadingAnchor.constraint(equalTo: ts.trailingAnchor, constant: 6),
             preview.trailingAnchor.constraint(equalTo: copy.leadingAnchor, constant: -8),
             preview.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
             count.trailingAnchor.constraint(equalTo: copy.leadingAnchor, constant: -8),
             count.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
-            del.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -10),
+            del.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -8),
             del.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             del.widthAnchor.constraint(equalToConstant: 14),
             del.heightAnchor.constraint(equalToConstant: 14),
 
-            dup.trailingAnchor.constraint(equalTo: del.leadingAnchor, constant: -4),
+            pin.trailingAnchor.constraint(equalTo: del.leadingAnchor, constant: -4),
+            pin.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            pin.widthAnchor.constraint(equalToConstant: 14),
+            pin.heightAnchor.constraint(equalToConstant: 14),
+
+            dup.trailingAnchor.constraint(equalTo: pin.leadingAnchor, constant: -4),
             dup.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             dup.widthAnchor.constraint(equalToConstant: 14),
             dup.heightAnchor.constraint(equalToConstant: 14),
@@ -1628,15 +1886,41 @@ class SectionCellView: NSTableCellView {
 
         // Apply initial collapsed state without animation
         applyCollapsed(section.isCollapsed)
+        // Apply initial pinned state
+        self.isPinned = section.isPinned
+        applyPinned(section.isPinned)
     }
 
     func applyCollapsed(_ collapsed: Bool) {
         textView?.isHidden = collapsed
         previewLabel?.isHidden = !collapsed
         if collapsed { updatePreviewLabel() }
+        let symbol = collapsed ? "chevron.down" : "chevron.up"
+        collapseButton?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        collapseButton?.toolTip = collapsed ? "Expand section" : "Collapse section"
         // Clip the cell so content doesn't overflow when row height shrinks
         clipsToBounds = true
         wantsLayer = true
+    }
+
+    func applyPinned(_ pinned: Bool) {
+        isPinned = pinned
+        if pinned {
+            pinButton?.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: "Unpin")
+            pinButton?.dimColor = NSColor.white.withAlphaComponent(0.85)
+            pinButton?.hoverColor = NSColor.white
+            pinButton?.toolTip = "Unpin section"
+        } else {
+            pinButton?.image = NSImage(systemSymbolName: "pin", accessibilityDescription: "Pin")
+            pinButton?.dimColor = NSColor.tertiaryLabelColor
+            pinButton?.hoverColor = NSColor.labelColor.withAlphaComponent(0.85)
+            pinButton?.toolTip = "Pin section"
+        }
+        pinButton?.alphaValue = isHovered ? 1 : 0
+    }
+
+    @objc private func pinToggled() {
+        ctrl?.togglePin(id: sectionId)
     }
 
     private func updatePreviewLabel() {
@@ -1649,10 +1933,8 @@ class SectionCellView: NSTableCellView {
         previewLabel?.stringValue = clean.isEmpty ? "(empty)" : clean
     }
 
-    @objc private func headerClicked(_ recognizer: NSClickGestureRecognizer) {
-        // Ignore clicks on the action buttons (copy/dup/del)
-        let pt = recognizer.location(in: headerView)
-        if let headerView, pt.x > headerView.bounds.width - 60 { return }
+
+    @objc private func collapseToggled() {
         ctrl?.toggleCollapse(id: sectionId)
     }
 
@@ -1689,6 +1971,11 @@ class SectionCellView: NSTableCellView {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             countLabel?.animator().alphaValue = 1
+            timestampLabel?.animator().alphaValue = 1
+            copyButton?.animator().alphaValue = 1
+            dupButton?.animator().alphaValue = 1
+            delButton?.animator().alphaValue = 1
+            pinButton?.animator().alphaValue = 1
         }
     }
 
@@ -1700,6 +1987,11 @@ class SectionCellView: NSTableCellView {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             countLabel?.animator().alphaValue = 0
+            timestampLabel?.animator().alphaValue = 0
+            copyButton?.animator().alphaValue = 0
+            dupButton?.animator().alphaValue = 0
+            delButton?.animator().alphaValue = 0
+            pinButton?.animator().alphaValue = 0
         }
     }
 
@@ -1712,6 +2004,21 @@ class SectionCellView: NSTableCellView {
             plain.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
         let chars = plain.count
         countLabel?.stringValue = "\(words)w · \(chars)c"
+    }
+
+    func refreshTimestamp(_ date: Date) {
+        timestampLabel?.stringValue = Self.relativeTime(date)
+    }
+
+    static func relativeTime(_ date: Date) -> String {
+        let seconds = Int(-date.timeIntervalSinceNow)
+        if seconds < 60  { return "just now" }
+        if seconds < 3600 { return "\(seconds / 60)m ago" }
+        if seconds < 86400 { return "\(seconds / 3600)h ago" }
+        if seconds < 604800 { return "\(seconds / 86400)d ago" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d"
+        return formatter.string(from: date)
     }
 
     func setSelected(_ selected: Bool) {
@@ -1728,7 +2035,7 @@ class SectionCellView: NSTableCellView {
     @objc func deleteSelf() { ctrl?.delete(id: sectionId) }
 }
 
-// MARK: Text View Delegate
+/// MARK: Text View Delegate
 
 extension SectionCellView: NSTextViewDelegate {
 
@@ -1889,7 +2196,10 @@ extension SectionCellView: NSTextViewDelegate {
         let rtf = len > 0 ? (textView.hasRichContent() ? textView.rtfDataForStorage() : nil) : nil
         ctrl?.update(id: sectionId, content: textView.string, rtfData: rtf)
         ctrl?.refreshRowHeight(for: self)
-        if isHovered { updateCountLabel() }
+        if isHovered {
+            updateCountLabel()
+            timestampLabel?.stringValue = Self.relativeTime(Date())
+        }
     }
 
     func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange,
@@ -1933,13 +2243,14 @@ class BucketBarView: NSView {
     private var draggingOriginalIndex = 0
 
     // The + button lives inside the bar and moves with the tabs
-    private let addButton: NSButton = {
-        let btn = NSButton()
+    private let addButton: HoverButton = {
+        let btn = HoverButton()
         btn.title = "+"
         btn.isBordered = false
         btn.bezelStyle = .inline
         btn.font = NSFont.systemFont(ofSize: 16, weight: .light)
-        btn.contentTintColor = NSColor.white.withAlphaComponent(0.45)
+        btn.dimColor = NSColor.white.withAlphaComponent(0.45)
+        btn.hoverColor = NSColor.white.withAlphaComponent(0.90)
         btn.wantsLayer = true
         return btn
     }()
@@ -2076,6 +2387,7 @@ class BucketTabView: NSView, NSTextViewDelegate {
     var onClick: (() -> Void)?
     var onRename: ((String) -> Void)?
     var onRequestDelete: (() -> Void)?
+    var onRequestDuplicate: (() -> Void)?
     var onDidEndEditing: (() -> Void)?
     var onDragMoved: ((NSEvent) -> Void)?
     var onDragEnded: (() -> Void)?
@@ -2086,7 +2398,8 @@ class BucketTabView: NSView, NSTextViewDelegate {
     private let label = NSTextField(labelWithString: "")
     private let editView = NSTextView()            // NSTextView handles its own key events
     private var editContainer: NSScrollView!
-    private let closeButton = NSButton()
+    private let closeButton = HoverButton()
+    private let dupButton = HoverButton()
     private var trackingArea: NSTrackingArea?
     private var isHovered = false
 
@@ -2134,26 +2447,43 @@ class BucketTabView: NSView, NSTextViewDelegate {
         editContainer.isHidden = true
         addSubview(editContainer)
 
-        // Close button — small circle with × , visible on hover/active
+        // Close button — plain ×, visible on hover/active
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         closeButton.title = ""
         closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")
-        closeButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 7, weight: .semibold)
+        closeButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .regular)
         closeButton.isBordered = false
         closeButton.bezelStyle = .inline
-        closeButton.contentTintColor = NSColor.white.withAlphaComponent(0.8)
-        closeButton.wantsLayer = true
-        closeButton.layer?.cornerRadius = 7
-        closeButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.15).cgColor
+        closeButton.dimColor = NSColor.tertiaryLabelColor
+        closeButton.hoverColor = NSColor.labelColor.withAlphaComponent(0.85)
         closeButton.target = self
         closeButton.action = #selector(requestDelete)
         closeButton.alphaValue = 0
         addSubview(closeButton)
 
+        // Duplicate button — same style as close, sits to its left
+        dupButton.translatesAutoresizingMaskIntoConstraints = false
+        dupButton.title = ""
+        dupButton.image = NSImage(systemSymbolName: "plus.square.on.square", accessibilityDescription: "Duplicate")
+        dupButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .light)
+        dupButton.isBordered = false
+        dupButton.bezelStyle = .inline
+        dupButton.dimColor = NSColor.tertiaryLabelColor
+        dupButton.hoverColor = NSColor.labelColor.withAlphaComponent(0.85)
+        dupButton.target = self
+        dupButton.action = #selector(requestDuplicate)
+        dupButton.alphaValue = 0
+        addSubview(dupButton)
+
         NSLayoutConstraint.activate([
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            label.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4),
+            label.trailingAnchor.constraint(equalTo: dupButton.leadingAnchor, constant: -4),
+
+            dupButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            dupButton.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4),
+            dupButton.widthAnchor.constraint(equalToConstant: 14),
+            dupButton.heightAnchor.constraint(equalToConstant: 14),
 
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
@@ -2276,6 +2606,7 @@ class BucketTabView: NSView, NSTextViewDelegate {
             layer?.borderWidth = 1
         }
         closeButton.alphaValue = (isHovered || isActive) ? 1.0 : 0.0
+        dupButton.alphaValue   = (isHovered || isActive) ? 1.0 : 0.0
     }
 
     // MARK: Inline rename
@@ -2324,5 +2655,6 @@ class BucketTabView: NSView, NSTextViewDelegate {
         commitEditing(cancel: false)
     }
 
-    @objc private func requestDelete() { onRequestDelete?() }
+    @objc private func requestDelete()    { onRequestDelete?() }
+    @objc private func requestDuplicate() { onRequestDuplicate?() }
 }
